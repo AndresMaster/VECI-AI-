@@ -13,6 +13,7 @@ from views import (
     PosView,
     InventoryView,
     CarteraView,
+    CashFlowView,
     MainLayout
 )
 
@@ -32,30 +33,13 @@ def main(page: ft.Page) -> None:
     init_db(seed_sample_data=True)
 
     # 3. Inicialización del Administrador de Códigos de Barras
-    barcode_manager = BarcodeManager(mode=ScannerMode.KEYBOARD_WEDGE)
+    barcode_manager = BarcodeManager(mode=ScannerMode.KEYBOARD_WEDGE, camera_index=1)
 
     # 4. Inicialización de Controladores (Patrón MVC)
     pos_controller = PosController()
     inventory_controller = InventoryController()
     customer_controller = CustomerController()
     dashboard_controller = DashboardController()
-
-    # 5. Enlace desacoplado de hardware con lógica de negocio
-    # Cualquier lectura (USB, Cámara o Entrada Manual) agrega automáticamente al POS
-    def on_barcode_scanned(code: str) -> None:
-        print(f"[Sistema POS] Código recibido desde hardware: {code}")
-        success, msg = pos_controller.add_product_by_barcode(code)
-        if not success:
-            print(f"[Sistema POS] Aviso de escaneo: {msg}")
-
-    barcode_manager.subscribe(on_barcode_scanned)
-    barcode_manager.start()
-
-    # Captura global de teclado para escáneres USB tipo 'Keyboard Wedge'
-    def on_keyboard_event(e: ft.KeyboardEvent) -> None:
-        barcode_manager.handle_keyboard_event(e.key)
-
-    page.on_keyboard_event = on_keyboard_event
 
     # 5.1 Sistema de Seguridad Global (Error Boundary) para evitar bloqueos
     def on_global_error(e: ft.ControlEvent) -> None:
@@ -101,15 +85,37 @@ def main(page: ft.Page) -> None:
     # 6. Construcción de Vistas
     dashboard_view = DashboardView(dashboard_controller)
     pos_view = PosView(pos_controller, customer_controller, barcode_manager)
-    inventory_view = InventoryView(inventory_controller)
+    inventory_view = InventoryView(inventory_controller, barcode_manager, pos_view)
     cartera_view = CarteraView(customer_controller)
+    cash_flow_view = CashFlowView(dashboard_controller)
 
-    # 7. Layout Principal con Navegación Persistente
+    # 7. Enlace de Hardware con Separación Estricta de Responsabilidades:
+    # - Si el modal de Nuevo Producto está abierto: autocompleta con Open Food Facts tras verificar SQLite.
+    # - En Facturación (POS): consulta EXCLUSIVAMENTE base local SQLite (sin peticiones a internet).
+    def on_barcode_scanned(code: str) -> None:
+        print(f"[Hardware Barcode] Código detectado: {code}")
+        if inventory_view.active_barcode_callback is not None:
+            inventory_view.active_barcode_callback(code)
+            return
+
+        pos_view.handle_external_scan(code)
+
+    barcode_manager.subscribe(on_barcode_scanned)
+    barcode_manager.start()
+
+    # Captura global de teclado para escáneres USB tipo 'Keyboard Wedge'
+    def on_keyboard_event(e: ft.KeyboardEvent) -> None:
+        barcode_manager.handle_keyboard_event(e.key)
+
+    page.on_keyboard_event = on_keyboard_event
+
+    # 8. Layout Principal con Navegación Persistente (Incluye Flujo de Caja / Transacciones)
     main_layout = MainLayout(
         dashboard_view=dashboard_view,
         pos_view=pos_view,
         inventory_view=inventory_view,
-        cartera_view=cartera_view
+        cartera_view=cartera_view,
+        cash_flow_view=cash_flow_view,
     )
 
     page.add(main_layout)

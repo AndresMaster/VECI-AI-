@@ -7,7 +7,8 @@ def create_card(
     bg_color: str = PastelTheme.SURFACE_WHITE,
     border_color: str = PastelTheme.BORDER_LIGHT,
     border_radius: int = PastelTheme.BORDER_RADIUS_CARD,
-    expand: bool | int = False
+    expand: bool | int = False,
+    visible: bool = True
 ) -> ft.Container:
     """Contenedor estilo Card redondeada con sombra y borde sutil."""
     return ft.Container(
@@ -17,6 +18,7 @@ def create_card(
         border=ft.Border.all(1, border_color),
         padding=padding,
         expand=expand,
+        visible=visible,
         shadow=ft.BoxShadow(
             spread_radius=0,
             blur_radius=8,
@@ -71,7 +73,7 @@ def create_badge(text: str, bg_color: str, text_color: str) -> ft.Container:
 def safe_update(control: ft.Control) -> None:
     """Actualiza el control de forma segura si ya está montado en la página."""
     try:
-        if control.page:
-            control.update()
-    except RuntimeError:
+        control.update()
+    except Exception:
         pass
+

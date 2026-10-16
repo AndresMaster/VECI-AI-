@@ -20,15 +20,22 @@ class Customer(Base):
     credit_limit: Mapped[float] = mapped_column(Float, default=0.0) # Límite de crédito disponible
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, index=True)
 
     # Relación con facturas
     invoices = relationship("Invoice", back_populates="customer", cascade="all, delete-orphan", lazy="select")
 
     @property
     def current_debt(self) -> float:
-        """Calcula el saldo pendiente por pagar de facturas a crédito no liquidadas."""
-        return round(sum(inv.total for inv in self.invoices if inv.payment_type == "CREDIT" and inv.payment_status == "PENDING"), 2)
+        """Calcula el saldo pendiente por pagar (descontando abonos) de facturas a crédito no liquidadas."""
+        return round(
+            sum(
+                inv.balance_due
+                for inv in self.invoices
+                if inv.payment_type == "CREDIT" and inv.payment_status == "PENDING"
+            ),
+            2,
+        )
 
     @property
     def available_credit(self) -> float:

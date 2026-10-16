@@ -105,8 +105,9 @@ class PosController:
                 Product.is_active == True
             ).first()
 
+            # RESTRICCIÓN ESTRICTA: Consultar EXCLUSIVAMENTE base de datos local SQLite (sin llamadas a internet)
             if not product:
-                return False, f"Producto con código '{code}' no encontrado."
+                return False, "Producto no encontrado. Regístrelo en el módulo de Inventario."
 
             current_qty = self.items[code].quantity if code in self.items else 0
             if current_qty + quantity > product.stock:
@@ -199,13 +200,15 @@ class PosController:
                     if customer.credit_limit > 0 and (customer.current_debt + self.total) > customer.credit_limit:
                         return False, f"La factura excede el límite de crédito disponible ({customer.available_credit}).", None
 
-            # Generar número consecutivo de factura
-            date_prefix = datetime.utcnow().strftime("%Y%m%d")
+            # Generar número consecutivo de factura y hora exacta de la transacción
+            now_dt = datetime.now()
+            date_prefix = now_dt.strftime("%Y%m%d")
             count_today = session.query(Invoice).filter(Invoice.invoice_number.like(f"INV-{date_prefix}-%")).count()
             invoice_num = f"INV-{date_prefix}-{(count_today + 1):04d}"
 
             invoice = Invoice(
                 invoice_number=invoice_num,
+                created_at=now_dt,
                 customer_id=self.customer_id,
                 payment_type=self.payment_type,
                 payment_status="PENDING" if self.payment_type == "CREDIT" else "PAID",

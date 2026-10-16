@@ -1,23 +1,27 @@
 import flet as ft
+from typing import Optional
 from config import PastelTheme, APP_TITLE, APP_VERSION
 from views.dashboard_view import DashboardView
 from views.inventory_view import InventoryView
 from views.pos_view import PosView
 from views.cartera_view import CarteraView
+from views.cash_flow_view import CashFlowView
+
 
 class MainLayout(ft.Row):
     """
     Layout maestro con menú de navegación lateral persistente.
     Preserva el estado en memoria de todas las vistas, permitiendo que el cajero
-    cambie de la pestaña 'Facturación' a 'Inventario' y regrese sin perder el
-    borrador de la venta actual ni sus productos.
+    cambie entre 'Dashboard', 'Facturación', 'Inventario', 'Cartera' y 'Flujo de Caja'
+    sin perder el borrador de la venta actual ni sus filtros.
     """
     def __init__(
         self,
         dashboard_view: DashboardView,
         pos_view: PosView,
         inventory_view: InventoryView,
-        cartera_view: CarteraView
+        cartera_view: CarteraView,
+        cash_flow_view: Optional[CashFlowView] = None,
     ):
         super().__init__(expand=True, spacing=0)
 
@@ -25,9 +29,12 @@ class MainLayout(ft.Row):
             dashboard_view,
             pos_view,
             inventory_view,
-            cartera_view
+            cartera_view,
         ]
-        self.current_index = 1 # Iniciamos por defecto en el POS (Facturación)
+        if cash_flow_view is not None:
+            self.views.append(cash_flow_view)
+
+        self.current_index = 1  # Iniciamos por defecto en el POS (Facturación)
 
         # Contenedor dinámico del área de contenido
         self.content_container = ft.Container(
@@ -36,11 +43,43 @@ class MainLayout(ft.Row):
             bgcolor=PastelTheme.BG_LIGHT
         )
 
+        destinations = [
+            ft.NavigationRailDestination(
+                icon=ft.Icons.DASHBOARD_OUTLINED,
+                selected_icon=ft.Icons.DASHBOARD_ROUNDED,
+                label="Dashboard",
+            ),
+            ft.NavigationRailDestination(
+                icon=ft.Icons.RECEIPT_LONG_OUTLINED,
+                selected_icon=ft.Icons.RECEIPT_LONG_ROUNDED,
+                label="Facturación",
+            ),
+            ft.NavigationRailDestination(
+                icon=ft.Icons.INVENTORY_2_OUTLINED,
+                selected_icon=ft.Icons.INVENTORY_2_ROUNDED,
+                label="Inventario",
+            ),
+            ft.NavigationRailDestination(
+                icon=ft.Icons.PEOPLE_ALT_OUTLINED,
+                selected_icon=ft.Icons.PEOPLE_ALT_ROUNDED,
+                label="Cartera",
+            ),
+        ]
+
+        if cash_flow_view is not None:
+            destinations.append(
+                ft.NavigationRailDestination(
+                    icon=ft.Icons.ACCOUNT_BALANCE_WALLET_OUTLINED,
+                    selected_icon=ft.Icons.ACCOUNT_BALANCE_WALLET_ROUNDED,
+                    label="Flujo de Caja",
+                )
+            )
+
         # Menú lateral persistente estilo NavigationRail moderno
         self.nav_rail = ft.NavigationRail(
             selected_index=self.current_index,
             label_type=ft.NavigationRailLabelType.ALL,
-            min_width=100,
+            min_width=105,
             min_extended_width=200,
             bgcolor=PastelTheme.SURFACE_WHITE,
             leading=ft.Container(
@@ -61,28 +100,7 @@ class MainLayout(ft.Row):
                 )
             ),
             group_alignment=-0.9,
-            destinations=[
-                ft.NavigationRailDestination(
-                    icon=ft.Icons.DASHBOARD_OUTLINED,
-                    selected_icon=ft.Icons.DASHBOARD_ROUNDED,
-                    label="Dashboard",
-                ),
-                ft.NavigationRailDestination(
-                    icon=ft.Icons.RECEIPT_LONG_OUTLINED,
-                    selected_icon=ft.Icons.RECEIPT_LONG_ROUNDED,
-                    label="Facturación",
-                ),
-                ft.NavigationRailDestination(
-                    icon=ft.Icons.INVENTORY_2_OUTLINED,
-                    selected_icon=ft.Icons.INVENTORY_2_ROUNDED,
-                    label="Inventario",
-                ),
-                ft.NavigationRailDestination(
-                    icon=ft.Icons.PEOPLE_ALT_OUTLINED,
-                    selected_icon=ft.Icons.PEOPLE_ALT_ROUNDED,
-                    label="Cartera",
-                ),
-            ],
+            destinations=destinations,
             on_change=self._on_navigation_change
         )
 
@@ -100,7 +118,7 @@ class MainLayout(ft.Row):
 
         target_view = self.views[new_index]
 
-        # Si regresamos a Dashboard, refrescamos métricas
+        # Si regresamos a Dashboard, refrescamos métricas según el filtro temporal activo
         if isinstance(target_view, DashboardView):
             target_view.refresh_data()
         # Si regresamos a Inventario, refrescamos tabla
@@ -112,6 +130,9 @@ class MainLayout(ft.Row):
         # Si regresamos a POS, el borrador sigue intacto en target_view.pos!
         elif isinstance(target_view, PosView):
             target_view.on_cart_changed()
+        # Si navegamos a Flujo de Caja / Transacciones, refrescamos el Libro Mayor
+        elif isinstance(target_view, CashFlowView):
+            target_view.load_transactions()
 
         self.content_container.content = target_view
         self.content_container.update()

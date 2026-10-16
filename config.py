@@ -10,6 +10,10 @@ APP_TITLE = "PointPulse POS & Inventory"
 APP_VERSION = "2.0.0"
 LOW_STOCK_THRESHOLD_DEFAULT = 5
 
+# Open Food Facts API Policy (Required Custom User-Agent)
+OFF_CONTACT_EMAIL = "andresromeo1324@gmail.com"
+OFF_USER_AGENT = f"MiSistemaPOS/1.0 - Python - Contacto: {OFF_CONTACT_EMAIL}"
+
 # Pastel UI Design Tokens (Light Theme with High Contrast Typography)
 class PastelTheme:
     # Backgrounds & Surfaces

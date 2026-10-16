@@ -1,31 +1,35 @@
 from typing import Dict, Any, Optional
-import httpx
+import requests
+from config import OFF_USER_AGENT
 
 class OpenFoodFactsService:
     """
-    Servicio de integración con la API REST de Open Food Facts (v2).
-    Permite consultar códigos de barras a nivel mundial y extraer
-    automáticamente el nombre, marca, categoría y la presentación física (quantity).
+    Servicio de integración con la API REST pública de Open Food Facts (v2).
+    Utiliza la librería 'requests' con User-Agent personalizado obligatorio.
+    Extrae 'product_name' (nombre), 'brands' (marca) y 'quantity' (presentación).
     """
 
     BASE_URL = "https://world.openfoodfacts.org/api/v2/product"
-    USER_AGENT = "PointPulsePOS/2.0 (local.pos.system; contact@pointpulse.local)"
+    USER_AGENT = OFF_USER_AGENT
 
     @classmethod
     def fetch_product_by_barcode(cls, barcode: str, timeout: float = 6.0) -> Dict[str, Any]:
         """
-        Consulta la API de Open Food Facts para un código de barras.
-        Retorna un diccionario estructurado con:
+        Ejecuta petición HTTP GET con 'requests' a Open Food Facts.
+        URL: https://world.openfoodfacts.org/api/v2/product/{codigo_de_barras}.json
+        
+        Verifica status 200 y status de producto '1'.
+        Retorna diccionario con:
         - found: bool
-        - name: str (nombre comercial del producto)
-        - quantity: str (presentación física: "65g", "500ml", "1kg", etc.)
-        - brand: str (marca fabricante)
-        - category: str (categoría alimenticia o general)
-        - display_name: str (nombre concatenado con presentación)
+        - product_name: str
+        - brands: str
+        - quantity: str (presentación física: ej. '65g', '500ml')
+        - category: str
+        - display_name: str
         """
         code = barcode.strip()
         if not code:
-            return {"found": False, "error": "Código de barras vacío"}
+            return {"found": False, "barcode": code, "error": "Código de barras vacío"}
 
         url = f"{cls.BASE_URL}/{code}.json"
         headers = {
@@ -34,69 +38,99 @@ class OpenFoodFactsService:
         }
 
         try:
-            with httpx.Client(timeout=timeout) as client:
-                response = client.get(url, headers=headers)
+            response = requests.get(url, headers=headers, timeout=timeout)
 
-                if response.status_code == 200:
-                    data = response.json()
-                    status = data.get("status")
-                    # En Open Food Facts, status == 1 indica producto encontrado
-                    if status == 1 and "product" in data:
-                        raw = data["product"]
-                        
-                        # 1. Extracción de Nombre (prioriza español si existe)
-                        name = (
-                            raw.get("product_name_es") or 
-                            raw.get("product_name") or 
-                            raw.get("generic_name_es") or 
-                            raw.get("generic_name") or 
-                            ""
-                        ).strip()
+            # Verificar status 200 de la petición HTTP
+            if response.status_code == 200:
+                data = response.json()
+                product_status = data.get("status")
 
-                        # 2. Extracción de Presentación / Cantidad (CRÍTICO)
-                        quantity = (
-                            raw.get("quantity") or 
-                            raw.get("product_quantity_unit") or 
-                            ""
-                        ).strip()
-                        # Limpiar sufijos comunes como 'e' (peso neto estimado europeo ej. '400 g e')
-                        if quantity.endswith(" e"):
-                            quantity = quantity[:-2].strip()
+                # En Open Food Facts, status == 1 indica producto encontrado y válido
+                if product_status == 1 and "product" in data:
+                    raw = data["product"]
 
-                        # 3. Extracción de Marca
-                        brand = (raw.get("brands") or "").strip()
-                        if brand:
-                            # Si vienen múltiples marcas separadas por coma, tomar la primera
-                            brand = brand.split(",")[0].strip()
+                    # 1. Extracción de product_name (prioriza variantes en español si están disponibles)
+                    product_name = (
+                        raw.get("product_name") or
+                        raw.get("product_name_es") or
+                        raw.get("generic_name_es") or
+                        raw.get("generic_name") or
+                        ""
+                    ).strip()
 
-                        # 4. Categoría
-                        category = (raw.get("categories") or "Abarrotes").split(",")[0].strip()
-                        if category.startswith("en:"):
-                            category = category[3:].replace("-", " ").capitalize()
+                    # 2. Extracción de brands (marca)
+                    brands = (raw.get("brands") or "").strip()
+                    if brands:
+                        # Si vienen múltiples marcas separadas por coma, tomar la principal
+                        brands = brands.split(",")[0].strip()
 
-                        # 5. Nombre sugerido para catálogo
-                        final_name = name
-                        if brand and brand.lower() not in final_name.lower():
-                            final_name = f"{final_name} {brand}".strip() if final_name else brand
+                    # 3. Extracción de quantity (presentación física: "65g", "500ml", "1kg")
+                    quantity = (
+                        raw.get("quantity") or
+                        raw.get("product_quantity_unit") or
+                        ""
+                    ).strip()
+                    if quantity.endswith(" e"):
+                        quantity = quantity[:-2].strip()
 
-                        display_name = f"{final_name} - {quantity}" if (quantity and final_name) else final_name
+                    # 4. Extracción de categoría
+                    category = (raw.get("categories") or "Abarrotes").split(",")[0].strip()
+                    if category.startswith("en:"):
+                        category = category[3:].replace("-", " ").capitalize()
 
-                        return {
-                            "found": True,
-                            "barcode": code,
-                            "name": final_name or "Producto sin nombre",
-                            "quantity": quantity, # ej. "65g", "500ml", "1kg"
-                            "brand": brand,
-                            "category": category or "General",
-                            "display_name": display_name
-                        }
+                    # Nombre compuesto para catálogo
+                    catalog_name = product_name or "Producto sin nombre"
+                    if brands and brands.lower() not in catalog_name.lower():
+                        catalog_name = f"{catalog_name} ({brands})"
 
-                elif response.status_code == 404:
-                    return {"found": False, "barcode": code, "error": "Producto no encontrado en Open Food Facts."}
+                    display_name = f"{catalog_name} - {quantity}" if (quantity and catalog_name) else catalog_name
 
-                return {"found": False, "barcode": code, "error": f"Respuesta no satisfactoria (HTTP {response.status_code})"}
+                    return {
+                        "found": True,
+                        "barcode": code,
+                        "product_name": product_name or catalog_name,
+                        "brands": brands,
+                        "name": catalog_name,
+                        "quantity": quantity,
+                        "category": category or "General",
+                        "display_name": display_name
+                    }
 
-        except httpx.TimeoutException:
-            return {"found": False, "barcode": code, "error": "Tiempo de espera agotado al conectar con Open Food Facts."}
+                elif product_status == 0 or product_status == "0":
+                    return {
+                        "found": False,
+                        "barcode": code,
+                        "error": "Producto no encontrado en Open Food Facts."
+                    }
+
+            elif response.status_code == 404:
+                return {
+                    "found": False,
+                    "barcode": code,
+                    "error": "Producto no registrado en Open Food Facts."
+                }
+
+            return {
+                "found": False,
+                "barcode": code,
+                "error": f"Respuesta del servidor no satisfactoria (HTTP {response.status_code})"
+            }
+
+        except requests.Timeout:
+            return {
+                "found": False,
+                "barcode": code,
+                "error": "Tiempo de espera agotado al conectar con Open Food Facts."
+            }
+        except requests.RequestException as req_err:
+            return {
+                "found": False,
+                "barcode": code,
+                "error": f"Error de conexión con Open Food Facts: {str(req_err)}"
+            }
         except Exception as e:
-            return {"found": False, "barcode": code, "error": f"Error de conexión: {str(e)}"}
+            return {
+                "found": False,
+                "barcode": code,
+                "error": f"Error inesperado al consultar Open Food Facts: {str(e)}"
+            }

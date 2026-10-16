@@ -40,6 +40,7 @@ class InventoryController:
         sale_price: float,
         stock: int,
         min_stock: int = 5,
+        brand: str = "",
         presentacion: str = "",
         description: str = "",
         category: str = "General"
@@ -61,6 +62,7 @@ class InventoryController:
             new_prod = Product(
                 barcode=barcode,
                 name=name,
+                brand=brand.strip() if brand else "",
                 presentacion=presentacion.strip() if presentacion else "",
                 description=description.strip() if description else None,
                 cost_price=float(cost_price),
@@ -83,6 +85,7 @@ class InventoryController:
         sale_price: float,
         stock: int,
         min_stock: int = 5,
+        brand: str = "",
         presentacion: str = "",
         description: str = "",
         category: str = "General"
@@ -102,6 +105,7 @@ class InventoryController:
 
             product.barcode = barcode.strip()
             product.name = name.strip()
+            product.brand = brand.strip() if brand else ""
             product.presentacion = presentacion.strip() if presentacion else ""
             product.cost_price = float(cost_price)
             product.sale_price = float(sale_price)
@@ -114,8 +118,43 @@ class InventoryController:
             session.refresh(product)
             return True, f"Producto '{product.display_name}' actualizado.", product.to_dict()
 
+    def scan_or_lookup_barcode_for_new(self, barcode: str) -> Dict[str, Any]:
+        """
+        Flujo de creación de producto con separación estricta:
+        1. Consulta primero en SQLite local para evitar duplicados.
+        2. Si no está en SQLite, ejecuta petición HTTP GET con 'requests' a Open Food Facts.
+        3. Si status 200 y status '1', extrae 'product_name', 'brands', 'quantity' y categoría.
+        """
+        code = barcode.strip()
+        if not code:
+            return {"status": "EMPTY", "message": "Código de barras vacío."}
+
+        # 1. Comprobación obligatoria en SQLite local
+        existing = self.get_product_by_barcode(code)
+        if existing:
+            return {
+                "status": "EXISTS_LOCAL",
+                "message": f"El producto ya existe en la base de datos local: '{existing['display_name']}'.",
+                "product": existing
+            }
+
+        # 2. Petición HTTP a Open Food Facts con librería 'requests' y User-Agent
+        from services.open_food_facts import OpenFoodFactsService
+        res = OpenFoodFactsService.fetch_product_by_barcode(code)
+        if res.get("found"):
+            return {
+                "status": "OFF_FOUND",
+                "message": f"¡Producto encontrado en Open Food Facts! {res.get('product_name')}",
+                "data": res
+            }
+
+        return {
+            "status": "NOT_FOUND",
+            "message": res.get("error", "Producto no registrado en Open Food Facts.")
+        }
+
     def lookup_open_food_facts(self, barcode: str) -> Dict[str, Any]:
-        """Consulta la API de Open Food Facts para autocompletar presentación y datos."""
+        """Consulta directa a la API de Open Food Facts vía 'requests'."""
         from services.open_food_facts import OpenFoodFactsService
         return OpenFoodFactsService.fetch_product_by_barcode(barcode)
 

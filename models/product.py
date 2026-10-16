@@ -14,6 +14,7 @@ class Product(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     barcode: Mapped[str] = mapped_column(String(100), unique=True, index=True, nullable=False)
     name: Mapped[str] = mapped_column(String(200), nullable=False, index=True)
+    brand: Mapped[Optional[str]] = mapped_column(String(100), default="", nullable=True) # Marca comercial
     presentacion: Mapped[Optional[str]] = mapped_column(String(100), default="", nullable=True) # ej. "65g", "500ml", "1kg"
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     
@@ -27,8 +28,8 @@ class Product(Base):
     category: Mapped[Optional[str]] = mapped_column(String(100), default="General")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
 
     # Relación con items de factura
     invoice_items = relationship("InvoiceItem", back_populates="product", lazy="select")
@@ -75,6 +76,7 @@ class Product(Base):
             "id": self.id,
             "barcode": self.barcode,
             "name": self.name,
+            "brand": self.brand or "",
             "presentacion": self.presentacion or "",
             "display_name": self.display_name,
             "description": self.description or "",

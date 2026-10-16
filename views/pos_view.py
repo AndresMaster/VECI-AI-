@@ -1,9 +1,26 @@
+import base64
 import flet as ft
-from typing import Optional
+from typing import Optional, Union
 from config import PastelTheme
 from controllers import PosController, CustomerController
 from services.barcode_manager import BarcodeManager, ScannerMode
 from views.theme import create_card, create_badge, safe_update
+
+def _generate_placeholder_camera_uri() -> str:
+    try:
+        import cv2
+        import numpy as np
+        # Imagen inicial de 280x180 para evitar el error de Flutter "A valid src value must be specified."
+        img = np.full((180, 280, 3), (40, 42, 54), dtype=np.uint8)
+        cv2.putText(img, "Iniciando camara...", (35, 95), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (200, 200, 200), 1)
+        _, buf = cv2.imencode('.jpg', img)
+        b64 = base64.b64encode(buf.tobytes()).decode('ascii')
+        return f"data:image/jpeg;base64,{b64}"
+    except Exception:
+        # Fallback a imagen JPEG válida de 1x1 en Base64 Data URI
+        return "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////wgALCAABAAEBAREA/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPxA="
+
+_INITIAL_CAMERA_URI = _generate_placeholder_camera_uri()
 
 class PosView(ft.Container):
     """
@@ -87,6 +104,93 @@ class PosView(ft.Container):
 
         self.scanner_status_badge = create_badge("Modo: USB Wedge", PastelTheme.MINT_PASTEL, PastelTheme.ACCENT_MINT)
 
+        # Componentes del escáner por cámara en vivo con filtros y verificación de 5 muestras
+        self.camera_image = ft.Image(
+            src=_INITIAL_CAMERA_URI,
+            fit=ft.BoxFit.CONTAIN,
+            width=280,
+            height=180,
+            border_radius=8,
+            gapless_playback=True
+        )
+        self.camera_verification_text = ft.Text(
+            f"Cámara activa (Índice {self.barcode_mgr.camera_index}). Enfoque el código de barras dentro del recuadro.",
+            size=12,
+            weight=ft.FontWeight.W_500,
+            color=PastelTheme.TEXT_SECONDARY
+        )
+        self.scan_feedback_banner = ft.Text(
+            "",
+            size=12,
+            weight=ft.FontWeight.BOLD,
+            color=PastelTheme.ACCENT_MINT,
+            visible=False
+        )
+
+        self.camera_preview_card = create_card(
+            visible=False,
+            padding=12,
+            content=ft.Row(
+                spacing=16,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                controls=[
+                    ft.Container(
+                        content=self.camera_image,
+                        bgcolor=PastelTheme.SURFACE_VARIANT,
+                        border_radius=8,
+                        alignment=ft.Alignment.CENTER,
+                        width=280,
+                        height=180
+                    ),
+                    ft.Column(
+                        expand=True,
+                        spacing=6,
+                        controls=[
+                            ft.Row([
+                                ft.Icon(ft.Icons.VIDEOCAM_ROUNDED, color=PastelTheme.PRIMARY, size=20),
+                                ft.Text("Escáner por Cámara (LectorBarr.py)", weight=ft.FontWeight.BOLD, size=14, color=PastelTheme.TEXT_PRIMARY)
+                            ]),
+                            self.camera_verification_text,
+                            ft.Text(
+                                "Pipeline: Región central (400x200), filtro CLAHE anti-reflejos y confirmación de 5 lecturas consecutivas.",
+                                size=11,
+                                color=PastelTheme.TEXT_MUTED
+                            ),
+                            ft.Row([
+                                ft.OutlinedButton(
+                                    "Cámara 1 (PC)",
+                                    style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)),
+                                    on_click=lambda _: self._switch_camera_index(1)
+                                ),
+                                ft.OutlinedButton(
+                                    "Cámara 0 (Secundaria)",
+                                    style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)),
+                                    on_click=lambda _: self._switch_camera_index(0)
+                                ),
+                                ft.FilledButton(
+                                    content=ft.Row([ft.Icon(ft.Icons.OPEN_IN_NEW_ROUNDED, size=15), ft.Text("Ventana OpenCV (LectorBarr)")]),
+                                    style=ft.ButtonStyle(
+                                        bgcolor=PastelTheme.SKY_PASTEL,
+                                        color=PastelTheme.ACCENT_SKY,
+                                        shape=ft.RoundedRectangleBorder(radius=8)
+                                    ),
+                                    on_click=self._toggle_native_opencv_window
+                                ),
+                                ft.TextButton(
+                                    "Ocultar Cámara",
+                                    on_click=self._toggle_scanner_mode
+                                )
+                            ], wrap=True, spacing=8)
+                        ]
+                    )
+                ]
+            )
+        )
+
+        # Conectar callbacks de video y verificación de muestras desde BarcodeManager
+        self.barcode_mgr.set_preview_callback(self._on_camera_preview_frame)
+        self.barcode_mgr.set_verification_callback(self._on_camera_verification_progress)
+
         # Construcción del Layout Principal (Izquierda: Carrito, Derecha: Panel de Cobro)
         self.content = ft.Column(
             expand=True,
@@ -119,24 +223,33 @@ class PosView(ft.Container):
                     ]
                 ),
 
+                # Tarjeta de Vista Previa de Cámara (Visible en modo Cámara)
+                self.camera_preview_card,
+
                 # Barra de escaneo rápido
                 create_card(
-                    content=ft.Row(
+                    content=ft.Column(
+                        spacing=6,
                         controls=[
-                            self.barcode_input,
-                            ft.FilledButton(
-                                content=ft.Row([ft.Icon(ft.Icons.ADD_SHOPPING_CART_ROUNDED, size=18), ft.Text("Agregar")]),
-                                style=ft.ButtonStyle(
-                                    bgcolor=PastelTheme.PRIMARY,
-                                    color=PastelTheme.TEXT_ON_PRIMARY,
-                                    shape=ft.RoundedRectangleBorder(radius=PastelTheme.BORDER_RADIUS_BUTTON),
-                                ),
-                                on_click=lambda _: self._on_barcode_submit()
+                            ft.Row(
+                                controls=[
+                                    self.barcode_input,
+                                    ft.FilledButton(
+                                        content=ft.Row([ft.Icon(ft.Icons.ADD_SHOPPING_CART_ROUNDED, size=18), ft.Text("Agregar")]),
+                                        style=ft.ButtonStyle(
+                                            bgcolor=PastelTheme.PRIMARY,
+                                            color=PastelTheme.TEXT_ON_PRIMARY,
+                                            shape=ft.RoundedRectangleBorder(radius=PastelTheme.BORDER_RADIUS_BUTTON),
+                                        ),
+                                        on_click=lambda _: self._on_barcode_submit()
+                                    ),
+                                    ft.TextButton(
+                                        "Simular Escaneo (7701001001)",
+                                        on_click=lambda _: self.barcode_mgr.scan_code("7701001001")
+                                    )
+                                ]
                             ),
-                            ft.TextButton(
-                                "Simular Escaneo (7701001001)",
-                                on_click=lambda _: self.barcode_mgr.scan_code("7701001001")
-                            )
+                            self.scan_feedback_banner
                         ]
                     ),
                     padding=10
@@ -272,12 +385,40 @@ class PosView(ft.Container):
 
     def _on_barcode_submit(self) -> None:
         code = self.barcode_input.value
+        self.barcode_input.value = ""
+        safe_update(self.barcode_input)
         if code:
             success, msg = self.pos.add_product_by_barcode(code)
-            self.barcode_input.value = ""
             if not success:
-                self._show_banner_error(msg)
-            safe_update(self.barcode_input)
+                self.scan_feedback_banner.value = f"⚠ {msg}"
+                self.scan_feedback_banner.color = PastelTheme.ACCENT_CORAL
+                self.scan_feedback_banner.visible = True
+                safe_update(self.scan_feedback_banner)
+            else:
+                item = self.pos.items.get(code)
+                if item:
+                    self.scan_feedback_banner.value = f"✓ Agregado a factura: {item.display_name} — Precio: ${item.sale_price:,.0f}"
+                    self.scan_feedback_banner.color = PastelTheme.ACCENT_MINT
+                    self.scan_feedback_banner.visible = True
+                    safe_update(self.scan_feedback_banner)
+
+    def handle_external_scan(self, code: str) -> None:
+        """Procesa una lectura proveniente de hardware (USB o cámara), limpiando el campo y alertando si no existe."""
+        self.barcode_input.value = ""
+        safe_update(self.barcode_input)
+        success, msg = self.pos.add_product_by_barcode(code)
+        if not success:
+            self.scan_feedback_banner.value = f"⚠ {msg}"
+            self.scan_feedback_banner.color = PastelTheme.ACCENT_CORAL
+            self.scan_feedback_banner.visible = True
+            safe_update(self.scan_feedback_banner)
+        else:
+            item = self.pos.items.get(code)
+            if item:
+                self.scan_feedback_banner.value = f"✓ Escaneo verificado (5/5): {item.display_name} — Precio: ${item.sale_price:,.0f}"
+                self.scan_feedback_banner.color = PastelTheme.ACCENT_MINT
+                self.scan_feedback_banner.visible = True
+                safe_update(self.scan_feedback_banner)
 
     def on_cart_changed(self) -> None:
         """Refresca la UI reactivamente cuando el borrador cambia."""
@@ -377,17 +518,87 @@ class PosView(ft.Container):
         cid = int(e.control.value) if e.control.value else None
         self.pos.set_customer(cid)
 
-    def _toggle_scanner_mode(self, _) -> None:
+    def _on_camera_preview_frame(self, frame_data: str) -> None:
+        """Actualiza el fotograma de la cámara en vivo en la interfaz."""
+        if self.camera_preview_card.visible:
+            self.camera_image.src = frame_data
+            safe_update(self.camera_image)
+
+    def _on_camera_verification_progress(self, code: str, current: int, required: int) -> None:
+        """Informa a la UI el avance de las muestras consecutivas requeridas para validar."""
+        if not code or current == 0:
+            new_text = f"Cámara activa (Índice {self.barcode_mgr.camera_index}). Enfoque el código dentro del recuadro."
+            new_color = PastelTheme.TEXT_SECONDARY
+        else:
+            if current >= required:
+                new_text = f"¡Código {code} confirmado (5/5)! Agregando a factura..."
+                new_color = PastelTheme.ACCENT_MINT
+            else:
+                new_text = f"Detectando código: {code} | Muestras: {current}/{required} confirmadas"
+                new_color = PastelTheme.ACCENT_AMBER
+
+        if self.camera_verification_text.value != new_text:
+            self.camera_verification_text.value = new_text
+            self.camera_verification_text.color = new_color
+            safe_update(self.camera_verification_text)
+
+    def _switch_camera_index(self, index: int) -> None:
+        """Cambia el dispositivo de cámara entre el índice 1 (PC) y 0 (Secundaria)."""
+        try:
+            if self.barcode_mgr.mode != ScannerMode.CAMERA:
+                self._toggle_scanner_mode()
+            if self.barcode_mgr.camera_index != index:
+                self.barcode_mgr.set_camera_index(index)
+            elif not self.barcode_mgr.is_running():
+                self.barcode_mgr.start()
+
+            cam_name = "Cámara 1 (PC)" if index == 1 else "Cámara 0 (Secundaria)"
+            self.camera_verification_text.value = f"Dispositivo activo: {cam_name}. Enfocando código de barras..."
+            self.camera_verification_text.color = PastelTheme.TEXT_SECONDARY
+            self.scanner_status_badge.content.value = f"Modo: Webcam ({self.barcode_mgr.camera_index})"
+            safe_update(self.camera_verification_text)
+            safe_update(self.scanner_status_badge)
+        except Exception as e:
+            print(f"[PosView] Error al cambiar índice de cámara: {e}")
+
+    def _toggle_scanner_mode(self, _=None) -> None:
         """Permite alternar entre escáner USB y escáner de cámara."""
-        new_mode = ScannerMode.CAMERA if self.barcode_mgr.mode == ScannerMode.KEYBOARD_WEDGE else ScannerMode.KEYBOARD_WEDGE
-        self.barcode_mgr.set_mode(new_mode)
-        badge_text = "Modo: Webcam (OpenCV)" if new_mode == ScannerMode.CAMERA else "Modo: USB Wedge"
-        badge_bg = PastelTheme.SKY_PASTEL if new_mode == ScannerMode.CAMERA else PastelTheme.MINT_PASTEL
-        badge_color = PastelTheme.ACCENT_SKY if new_mode == ScannerMode.CAMERA else PastelTheme.ACCENT_MINT
-        self.scanner_status_badge.content.value = badge_text
-        self.scanner_status_badge.bgcolor = badge_bg
-        self.scanner_status_badge.content.color = badge_color
-        self.scanner_status_badge.update()
+        try:
+            new_mode = ScannerMode.CAMERA if self.barcode_mgr.mode == ScannerMode.KEYBOARD_WEDGE else ScannerMode.KEYBOARD_WEDGE
+            if new_mode == ScannerMode.KEYBOARD_WEDGE and hasattr(self.barcode_mgr, "stop_native_window"):
+                self.barcode_mgr.stop_native_window()
+            self.barcode_mgr.set_mode(new_mode)
+            is_camera = (new_mode == ScannerMode.CAMERA)
+            self.camera_preview_card.visible = is_camera
+
+            badge_text = f"Modo: Webcam ({self.barcode_mgr.camera_index})" if is_camera else "Modo: USB Wedge"
+            badge_bg = PastelTheme.SKY_PASTEL if is_camera else PastelTheme.MINT_PASTEL
+            badge_color = PastelTheme.ACCENT_SKY if is_camera else PastelTheme.ACCENT_MINT
+            self.scanner_status_badge.content.value = badge_text
+            self.scanner_status_badge.bgcolor = badge_bg
+            self.scanner_status_badge.content.color = badge_color
+
+            safe_update(self.scanner_status_badge)
+            safe_update(self.camera_preview_card)
+        except Exception as e:
+            print(f"[PosView] Error al alternar modo de escáner: {e}")
+
+    def _toggle_native_opencv_window(self, _=None) -> None:
+        """Abre o cierra la ventana nativa flotante de OpenCV (LectorBarr.py)."""
+        try:
+            is_open = self.barcode_mgr.toggle_native_window()
+            if is_open:
+                self.camera_verification_text.value = "Ventana flotante de LectorBarr abierta. Escanee allí los códigos (presione 'q' para cerrar)."
+                self.camera_verification_text.color = PastelTheme.ACCENT_SKY
+                self.scanner_status_badge.content.value = f"Modo: LectorBarr ({self.barcode_mgr.camera_index})"
+            else:
+                self.camera_verification_text.value = f"Cámara activa (Índice {self.barcode_mgr.camera_index}). Ubique el código en el recuadro."
+                self.camera_verification_text.color = PastelTheme.TEXT_SECONDARY
+                self.scanner_status_badge.content.value = f"Modo: Webcam ({self.barcode_mgr.camera_index})"
+            safe_update(self.camera_verification_text)
+            safe_update(self.scanner_status_badge)
+        except Exception as e:
+            print(f"[PosView] Error al alternar ventana OpenCV: {e}")
 
     def _process_checkout(self, _) -> None:
         """Ejecuta el proceso de cobro con manejo defensivo de errores."""
