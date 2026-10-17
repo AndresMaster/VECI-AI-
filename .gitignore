@@ -15,10 +15,13 @@ venv.bak/
 
 # SQLite databases & local data
 *.db
+!build_assets/auth.db
 *.sqlite
 *.sqlite3
 pos_inventory.db
 supermercado.db
+installer_output/
+dmg_staging/
 
 # macOS files
 .DS_Store

@@ -161,7 +161,7 @@ class MainLayout(ft.Row):
                             padding=10,
                             content=ft.Icon(ft.Icons.POINT_OF_SALE_ROUNDED, size=28, color=PastelTheme.PRIMARY)
                         ),
-                        ft.Text("PointPulse", size=13, weight=ft.FontWeight.BOLD, color=PastelTheme.TEXT_PRIMARY),
+                        ft.Text("VECI_AI", size=13, weight=ft.FontWeight.BOLD, color=PastelTheme.TEXT_PRIMARY),
                         ft.Text(f"v{APP_VERSION}", size=10, color=PastelTheme.TEXT_MUTED)
                     ]
                 )

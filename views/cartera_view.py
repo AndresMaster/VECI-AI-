@@ -258,12 +258,14 @@ class CarteraView(ft.Container):
             value=customer.get("document_id", "") if is_edit else "",
             border_radius=8,
             dense=True,
+            expand=True,
         )
         phone_tf = ft.TextField(
             label="Teléfono / Celular",
             value=customer.get("phone", "") if is_edit else "",
             border_radius=8,
             dense=True,
+            expand=True,
         )
         email_tf = ft.TextField(
             label="Correo Electrónico",
@@ -379,10 +381,11 @@ class CarteraView(ft.Container):
                 content=ft.Column(
                     tight=True,
                     spacing=10,
+                    horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
                     controls=[
                         *header_info_controls,
                         name_tf,
-                        ft.Row(spacing=10, controls=[ft.Container(expand=True, content=doc_tf), ft.Container(expand=True, content=phone_tf)]),
+                        ft.Row(spacing=10, controls=[doc_tf, phone_tf]),
                         email_tf,
                         address_tf,
                         notes_tf,
@@ -421,12 +424,14 @@ class CarteraView(ft.Container):
             value=supplier.get("contact_name", "") if is_edit else "",
             border_radius=8,
             dense=True,
+            expand=True,
         )
         phone_tf = ft.TextField(
             label="Teléfono / Celular",
             value=supplier.get("phone", "") if is_edit else "",
             border_radius=8,
             dense=True,
+            expand=True,
         )
         email_tf = ft.TextField(
             label="Correo Electrónico",
@@ -537,10 +542,11 @@ class CarteraView(ft.Container):
                 content=ft.Column(
                     tight=True,
                     spacing=10,
+                    horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
                     controls=[
                         *header_info_controls,
                         name_tf,
-                        ft.Row(spacing=10, controls=[ft.Container(expand=True, content=contact_tf), ft.Container(expand=True, content=phone_tf)]),
+                        ft.Row(spacing=10, controls=[contact_tf, phone_tf]),
                         email_tf,
                         address_tf,
                         notes_tf,

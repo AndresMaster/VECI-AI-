@@ -499,7 +499,7 @@ class InventoryView(ft.Container):
             label="Nombre del producto (product_name)",
             value=init_name,
             border_radius=8,
-            dense=True
+            dense=True,
         )
         brand_tf = ft.TextField(
             label="Marca (brands)",
@@ -521,34 +521,38 @@ class InventoryView(ft.Container):
             autofocus=(has_initial and initial_scan_data.get("is_off_found", False)),
             keyboard_type=ft.KeyboardType.NUMBER,
             border_radius=8,
-            dense=True
+            dense=True,
+            expand=True
         )
         sale_tf = ft.TextField(
             label="Precio de Venta ($)",
             value=init_sale,
             keyboard_type=ft.KeyboardType.NUMBER,
             border_radius=8,
-            dense=True
+            dense=True,
+            expand=True
         )
         stock_tf = ft.TextField(
             label="Cantidad en Stock",
             value=init_stock,
             keyboard_type=ft.KeyboardType.NUMBER,
             border_radius=8,
-            dense=True
+            dense=True,
+            expand=True
         )
         min_stock_tf = ft.TextField(
             label="Stock Mínimo (Alerta)",
             value=init_min_stock,
             keyboard_type=ft.KeyboardType.NUMBER,
             border_radius=8,
-            dense=True
+            dense=True,
+            expand=True
         )
         category_tf = ft.TextField(
             label="Categoría",
             value=init_category,
             border_radius=8,
-            dense=True
+            dense=True,
         )
 
         profit_preview = ft.Text("Utilidad: $0.00 (0%)", weight=ft.FontWeight.BOLD, color=PastelTheme.ACCENT_MINT)
@@ -698,6 +702,7 @@ class InventoryView(ft.Container):
                 content=ft.Column(
                     spacing=12,
                     tight=True,
+                    horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
                     controls=[
                         ft.Row(
                             spacing=6,
@@ -713,15 +718,15 @@ class InventoryView(ft.Container):
                         ),
                         off_status_text,
                         name_tf,
-                        ft.Row([brand_tf, presentacion_tf]),
-                        ft.Row([cost_tf, sale_tf]),
+                        ft.Row([brand_tf, presentacion_tf], spacing=10),
+                        ft.Row([cost_tf, sale_tf], spacing=10),
                         ft.Container(
                             bgcolor=PastelTheme.MINT_PASTEL,
                             padding=10,
                             border_radius=8,
                             content=profit_preview
                         ),
-                        ft.Row([stock_tf, min_stock_tf]),
+                        ft.Row([stock_tf, min_stock_tf], spacing=10),
                         category_tf
                     ]
                 )

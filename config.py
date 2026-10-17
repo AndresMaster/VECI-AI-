@@ -1,20 +1,44 @@
 from pathlib import Path
+import os
+import shutil
+import sys
 
-# Paths
-BASE_DIR = Path(__file__).resolve().parent
+# Paths (con soporte transparente para ejecución en código fuente y empaquetado PyInstaller)
+if getattr(sys, "frozen", False):
+    RESOURCE_DIR = Path(getattr(sys, "_MEIPASS", Path(sys.executable).resolve().parent))
+    if sys.platform == "win32":
+        _appdata = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+        BASE_DIR = _appdata / "VECI_AI"
+    elif sys.platform == "darwin":
+        BASE_DIR = Path.home() / "Library" / "Application Support" / "VECI_AI"
+    else:
+        BASE_DIR = Path.home() / ".veci_ai"
+    BASE_DIR.mkdir(parents=True, exist_ok=True)
+    # Copiar base de datos maestra vacía (auth.db) empaquetada si es la primera ejecución
+    _bundled_auth = RESOURCE_DIR / "auth.db"
+    _target_auth = BASE_DIR / "auth.db"
+    if _bundled_auth.exists() and not _target_auth.exists():
+        try:
+            shutil.copy2(_bundled_auth, _target_auth)
+        except Exception:
+            pass
+else:
+    BASE_DIR = Path(__file__).resolve().parent
+    RESOURCE_DIR = BASE_DIR
+
 AUTH_DATABASE_PATH = BASE_DIR / "auth.db"
 AUTH_DATABASE_URL = f"sqlite:///{AUTH_DATABASE_PATH}"
 DATABASE_PATH = BASE_DIR / "pos_inventory.db"
 DATABASE_URL = f"sqlite:///{DATABASE_PATH}"
 
 # App Config
-APP_TITLE = "PointPulse POS & Inventory"
-APP_VERSION = "2.0.0"
+APP_TITLE = "VECI_AI"
+APP_VERSION = "1.0.0"
 LOW_STOCK_THRESHOLD_DEFAULT = 5
 
 # Open Food Facts API Policy (Required Custom User-Agent)
 OFF_CONTACT_EMAIL = "andresromeo1324@gmail.com"
-OFF_USER_AGENT = f"MiSistemaPOS/1.0 - Python - Contacto: {OFF_CONTACT_EMAIL}"
+OFF_USER_AGENT = f"VECI_AI/2.0 - Python - Contacto: {OFF_CONTACT_EMAIL}"
 
 # Pastel UI Design Tokens (Light Theme with High Contrast Typography)
 class PastelTheme:

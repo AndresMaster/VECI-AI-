@@ -502,6 +502,7 @@ class CashFlowView(ft.Container):
                 content=ft.Column(
                     tight=True,
                     spacing=12,
+                    horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
                     controls=[
                         ft.Text(
                             f"Fecha y Hora de registro: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
@@ -630,6 +631,7 @@ class CashFlowView(ft.Container):
                 content=ft.Column(
                     tight=True,
                     spacing=12,
+                    horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
                     controls=[
                         ft.Text(
                             f"Fecha y Hora de registro: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",

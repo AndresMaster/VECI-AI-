@@ -198,6 +198,19 @@ class DashboardView(ft.Container):
         profit_bg = PastelTheme.MINT_PASTEL if real_profit >= 0 else PastelTheme.CORAL_PASTEL
         profit_color = PastelTheme.ACCENT_MINT if real_profit >= 0 else PastelTheme.ACCENT_CORAL
 
+        cash_in_box = kpis.get("cash_sales", kpis["total_realized_sales"])
+        pending_cred = kpis.get("pending_credits", 0.0)
+        if pending_cred > 0:
+            sales_subtitle = (
+                f"Caja: ${cash_in_box:,.0f} | Créd: ${pending_cred:,.0f} "
+                f"({kpis['total_invoices_count']})"
+            )
+        else:
+            sales_subtitle = (
+                f"En caja: ${cash_in_box:,.0f} "
+                f"({kpis['total_invoices_count']} ventas)"
+            )
+
         # 1. KPIs Dinámicos del Periodo
         self.kpi_row.controls = [
             create_metric_tile(
@@ -212,15 +225,12 @@ class DashboardView(ft.Container):
                 ),
             ),
             create_metric_tile(
-                title="Ventas Proyectadas",
-                value=f"${kpis['period_projected_sales']:,.0f}",
+                title="Ventas",
+                value=f"${kpis['total_realized_sales']:,.0f}",
                 icon=ft.Icons.POINT_OF_SALE_ROUNDED,
                 bg_pastel=PastelTheme.SKY_PASTEL,
                 icon_color=PastelTheme.ACCENT_SKY,
-                subtitle=(
-                    f"Facturado: ${kpis['total_realized_sales']:,.0f} "
-                    f"({kpis['total_invoices_count']} ventas)"
-                ),
+                subtitle=sales_subtitle,
             ),
             create_metric_tile(
                 title="Utilidad Real Neta",
@@ -246,9 +256,9 @@ class DashboardView(ft.Container):
         # 2. Gráficos de Matplotlib recalculados sólo para el periodo seleccionado
         bar_bytes = ChartService.generate_valuation_bar_chart(
             cost_val=kpis["period_cost"],
-            retail_val=kpis["period_projected_sales"],
+            retail_val=kpis["total_realized_sales"],
             profit_val=kpis["total_realized_profit"],
-            realized_sales_val=kpis["total_realized_sales"],
+            realized_sales_val=None,
             period_label=kpis["period_label"],
             as_bytes=True,
         )

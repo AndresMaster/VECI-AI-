@@ -45,10 +45,10 @@ class ChartService:
             profit_color = "#86EFAC" if profit_val >= 0 else "#FCA5A5"
             colors = ["#FCA5A5", "#93C5FD", "#C4B5FD", profit_color]
         else:
-            labels = ["Costo Total", "Venta Proy.", "Utilidad Real"]
+            labels = ["Costos/Egresos", "Ventas", "Utilidad Real"]
             values = [cost_val, retail_val, profit_val]
             profit_color = "#86EFAC" if profit_val >= 0 else "#FCA5A5"
-            colors = ["#93C5FD", "#86EFAC", profit_color]
+            colors = ["#FCA5A5", "#93C5FD", profit_color]
 
         bars = ax.bar(labels, values, color=colors, width=0.52, edgecolor="#CBD5E1", linewidth=1.2)
 
@@ -83,7 +83,7 @@ class ChartService:
                 color="#0F172A" if height >= 0 else "#E11D48"
             )
 
-        title = "Balance y Proyección del Periodo"
+        title = "Balance Financiero del Periodo"
         if period_label:
             ax.set_title(f"{title}\n({period_label})", fontsize=9.5, fontweight="bold", color="#0F172A", pad=10)
         else:

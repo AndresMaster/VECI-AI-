@@ -1,0 +1,120 @@
+name: Build & Release VECI AI Installers
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-installers:
+    name: Build Installer (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - windows-latest
+          - macos-latest
+
+    steps:
+      # 1. Checkout del código e instalación de dependencias
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install native dependencies (macOS zbar for pyzbar)
+        if: runner.os == 'macOS'
+        run: |
+          brew install zbar
+
+      - name: Install Python dependencies & PyInstaller
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Verify / Generate Icons (.ico and .icns)
+        run: |
+          python build_assets/generate_icons.py
+
+      # 2. Ejecutar PyInstaller usando veci_ai.spec
+      - name: Build application bundle with PyInstaller
+        run: |
+          pyinstaller --noconfirm --clean veci_ai.spec
+
+      # 3. [SOLO EN WINDOWS]: Compilar instalador Veci_AI_Setup.exe con Inno Setup (iscc)
+      - name: Compile Windows Installer with Inno Setup (ISCC)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $isccPath = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $isccPath)) {
+            choco install innosetup --yes --no-progress
+          }
+          & $isccPath "veci_ai_setup.iss"
+          Get-ChildItem -Path "installer_output"
+
+      # 4. [SOLO EN MAC]: Empaquetar VECI_AI.app en .dmg y .zip
+      - name: Package macOS .app into .dmg and .zip
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p installer_output dmg_staging
+          cp -R "dist/VECI_AI.app" "dmg_staging/VECI_AI.app"
+          ln -s /Applications "dmg_staging/Applications"
+
+          hdiutil create \
+            -volname "VECI AI Installer" \
+            -srcfolder "dmg_staging" \
+            -ov -format UDZO \
+            "installer_output/VECI_AI_macOS.dmg"
+
+          ditto -c -k --sequesterRsrc --keepParent \
+            "dist/VECI_AI.app" \
+            "installer_output/VECI_AI_macOS.zip"
+
+          ls -lh installer_output/
+
+      # 5. Subir instaladores como Artifacts en GitHub Actions
+      - name: Upload Windows Installer Artifact
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: VECI_AI-Windows-Installer
+          path: installer_output/Veci_AI_Setup.exe
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload macOS Installer Artifacts
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: VECI_AI-macOS-Installer
+          path: |
+            installer_output/VECI_AI_macOS.dmg
+            installer_output/VECI_AI_macOS.zip
+          if-no-files-found: error
+          retention-days: 30
+
+      # 6. Publicar en GitHub Releases automáticamente cuando se empuja un tag v* (ej. v1.0.0)
+      - name: Publish Installers to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "VECI AI ${{ github.ref_name }}"
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            installer_output/*

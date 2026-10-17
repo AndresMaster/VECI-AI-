@@ -229,6 +229,7 @@ class DashboardController:
                 inv.balance_due for inv in invoices
                 if inv.payment_type == "CREDIT" and inv.payment_status == "PENDING"
             )
+            cash_sales = max(0.0, realized_sales - pending_credits)
 
             # 3. Compras / Pagos a Proveedores filtrados por DateTime
             sp_query = session.query(SupplierPurchase)
@@ -318,6 +319,7 @@ class DashboardController:
                 "period_projected_sales": round(period_projected_sales, 2),
                 "period_potential_profit": round(period_potential_profit, 2),
                 "total_realized_sales": round(realized_sales, 2),
+                "cash_sales": round(cash_sales, 2),
                 "sales_cogs": round(sales_cogs, 2),
                 "gross_sales_profit": round(gross_sales_profit, 2),
                 "supplier_expenses": round(supplier_expenses, 2),
