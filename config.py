@@ -2,6 +2,8 @@ from pathlib import Path
 
 # Paths
 BASE_DIR = Path(__file__).resolve().parent
+AUTH_DATABASE_PATH = BASE_DIR / "auth.db"
+AUTH_DATABASE_URL = f"sqlite:///{AUTH_DATABASE_PATH}"
 DATABASE_PATH = BASE_DIR / "pos_inventory.db"
 DATABASE_URL = f"sqlite:///{DATABASE_PATH}"
 

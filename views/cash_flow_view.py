@@ -5,7 +5,7 @@ import flet as ft
 from config import PastelTheme
 from controllers import DashboardController
 from views.date_filter_bar import DateRangeFilterBar
-from views.theme import create_card, create_metric_tile, create_badge, safe_update
+from views.theme import create_card, create_metric_tile, create_badge, safe_update, SearchableDropdown
 
 
 class CashFlowView(ft.Container):
@@ -528,18 +528,30 @@ class CashFlowView(ft.Container):
         self.page.show_dialog(dialog)
 
     def show_create_supplier_payment_modal(self) -> None:
-        """Modal para registrar un Pago / Compra a Proveedor en supplier_purchases."""
+        """Modal para registrar un Pago / Compra a Proveedor en supplier_purchases con filtro instantáneo desde la 1ª letra."""
         suppliers = self.controller.get_active_suppliers_list()
-        supplier_options = [ft.dropdown.Option("", "Proveedor General / Compra Directa")] + [
-            ft.dropdown.Option(str(s["id"]), s["name"]) for s in suppliers
+        supplier_options = [
+            {
+                "key": "",
+                "label": "Proveedor General / Compra Directa",
+                "subtitle": "Pago o compra directa sin proveedor específico",
+            }
+        ] + [
+            {
+                "key": str(s["id"]),
+                "label": s["name"],
+                "subtitle": f"Contacto: {s.get('contact_name') or 'N/A'}  •  Tel: {s.get('phone') or 'N/A'}",
+            }
+            for s in suppliers
         ]
 
-        supplier_dd = ft.Dropdown(
+        supplier_dd = SearchableDropdown(
             label="Seleccionar Proveedor",
-            value=str(suppliers[0]["id"]) if suppliers else "",
-            border_radius=8,
-            dense=True,
+            hint_text="Seleccione de la lista o escriba desde la 1ª letra...",
+            prefix_icon=ft.Icons.LOCAL_SHIPPING_ROUNDED,
             options=supplier_options,
+            value=str(suppliers[0]["id"]) if suppliers else "",
+            max_list_height=160,
         )
 
         ref_tf = ft.TextField(
@@ -554,7 +566,6 @@ class CashFlowView(ft.Container):
             hint_text="Ej. Compra de lote de bebidas y abarrotes...",
             border_radius=8,
             dense=True,
-            autofocus=True,
         )
 
         monto_tf = ft.TextField(
@@ -589,7 +600,8 @@ class CashFlowView(ft.Container):
                 safe_update(error_text)
                 return
 
-            sup_id = int(supplier_dd.value) if (supplier_dd.value and supplier_dd.value.isdigit()) else None
+            sup_val = str(supplier_dd.value or "").strip()
+            sup_id = int(sup_val) if sup_val.isdigit() else None
 
             ok, msg, _ = self.controller.create_supplier_purchase(
                 supplier_id=sup_id,

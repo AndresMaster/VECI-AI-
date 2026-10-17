@@ -91,7 +91,59 @@ class PosController:
     def total_estimated_profit(self) -> float:
         return round(sum(item.total_profit for item in self.items.values()), 2)
 
+    # ================= BÚSQUEDA PREDICTIVA (AUTOCOMPLETADO POR NOMBRE) =================
+
+    def search_products_by_name(self, search_term: str, limit: int = 10) -> List[Dict[str, Any]]:
+        """
+        Consulta dinámica e instantánea en SQLite usando LIKE '%término_de_búsqueda%' desde la
+        primera letra digitada (len >= 1) para el buscador predictivo en Facturación.
+        Concatena nombre y presentación física (display_name) para evitar confusiones.
+        """
+        term = (search_term or "").strip()
+        if len(term) < 1:
+            return []
+
+        like_pattern = f"%{term}%"
+        term_lower = term.lower()
+        with get_db_session() as session:
+            matches = (
+                session.query(Product)
+                .filter(
+                    Product.is_active == True,
+                    or_(
+                        Product.name.ilike(like_pattern),
+                        Product.presentacion.ilike(like_pattern),
+                        Product.barcode.ilike(like_pattern),
+                    ),
+                )
+                .order_by(Product.name.asc(), Product.presentacion.asc())
+                .all()
+            )
+            # Priorizar productos cuyo nombre inicia con la letra/texto digitado
+            matches.sort(
+                key=lambda p: (
+                    0 if (p.name or "").lower().startswith(term_lower) else 1,
+                    (p.name or "").lower(),
+                    (p.presentacion or "").lower(),
+                )
+            )
+            return [p.to_dict() for p in matches[:limit]]
+
     # ================= GESTIÓN DEL CARRITO (BORRADOR) =================
+
+    def add_item_to_invoice(self, barcode_or_id: str | int, quantity: int = 1) -> tuple[bool, str]:
+        """
+        Método unificado invocado tanto por el escáner de código de barras como por
+        la selección en la barra de búsqueda predictiva por nombre.
+        """
+        if isinstance(barcode_or_id, int):
+            with get_db_session() as session:
+                prod = session.query(Product).filter_by(id=barcode_or_id, is_active=True).first()
+                if not prod:
+                    return False, "Producto no encontrado. Regístrelo en el módulo de Inventario."
+                barcode_str = prod.barcode
+            return self.add_product_by_barcode(barcode_str, quantity=quantity)
+        return self.add_product_by_barcode(str(barcode_or_id), quantity=quantity)
 
     def add_product_by_barcode(self, barcode: str, quantity: int = 1) -> tuple[bool, str]:
         """
@@ -111,7 +163,7 @@ class PosController:
 
             current_qty = self.items[code].quantity if code in self.items else 0
             if current_qty + quantity > product.stock:
-                return False, f"Stock insuficiente para '{product.name}'. Disponible: {product.stock}"
+                return False, f"Stock insuficiente para '{product.display_name}'. Disponible: {product.stock}"
 
             if code in self.items:
                 self.items[code].quantity += quantity
@@ -189,16 +241,12 @@ class PosController:
             return False, "Para facturas a crédito es obligatorio seleccionar un cliente.", None
 
         with get_db_session() as session:
-            # Validación de cliente y crédito
+            # Validación de cliente asignado
             customer = None
             if self.customer_id:
                 customer = session.query(Customer).filter_by(id=self.customer_id).first()
                 if not customer:
                     return False, f"Cliente ID {self.customer_id} no existe.", None
-
-                if self.payment_type == "CREDIT":
-                    if customer.credit_limit > 0 and (customer.current_debt + self.total) > customer.credit_limit:
-                        return False, f"La factura excede el límite de crédito disponible ({customer.available_credit}).", None
 
             # Generar número consecutivo de factura y hora exacta de la transacción
             now_dt = datetime.now()

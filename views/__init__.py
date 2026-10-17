@@ -1,4 +1,5 @@
-from views.theme import create_card, create_metric_tile, create_badge
+from views.theme import create_card, create_metric_tile, create_badge, SearchableDropdown
+from views.auth_view import AuthView
 from views.date_filter_bar import DateRangeFilterBar
 from views.dashboard_view import DashboardView
 from views.inventory_view import InventoryView
@@ -11,6 +12,8 @@ __all__ = [
     "create_card",
     "create_metric_tile",
     "create_badge",
+    "SearchableDropdown",
+    "AuthView",
     "DateRangeFilterBar",
     "DashboardView",
     "InventoryView",

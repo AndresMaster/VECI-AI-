@@ -1,12 +1,16 @@
 import contextlib
 from datetime import datetime, timedelta
-from typing import Generator
+from pathlib import Path
+from typing import Generator, Optional
 from sqlalchemy import create_engine, text
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import sessionmaker, Session
 
-from config import DATABASE_URL
+from config import BASE_DIR, DATABASE_URL, AUTH_DATABASE_URL
 from models import (
     Base,
+    AuthBase,
+    User,
     Product,
     Customer,
     Supplier,
@@ -17,21 +21,128 @@ from models import (
     GastosGenerales,
 )
 
-# Engine configurado para SQLite en entorno multi-hilo (UI Flet + hilo del escáner de cámara)
-engine = create_engine(
-    DATABASE_URL,
+# ================= 1. BASE DE DATOS MAESTRA DE AUTENTICACIÓN (auth.db) =================
+# Contiene EXCLUSIVAMENTE la tabla 'usuarios' (ID, Username, Password_Hash, Created_At)
+auth_engine: Engine = create_engine(
+    AUTH_DATABASE_URL,
     echo=False,
-    connect_args={"check_same_thread": False}
+    connect_args={"check_same_thread": False},
 )
 
-# Fábrica de sesiones ORM
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, expire_on_commit=False, bind=engine)
+AuthSessionLocal = sessionmaker(
+    autocommit=False,
+    autoflush=False,
+    expire_on_commit=False,
+    bind=auth_engine,
+)
+
+
+def init_auth_db() -> None:
+    """Inicializa la base de datos maestra (auth.db) creando únicamente la tabla de Usuarios."""
+    AuthBase.metadata.create_all(bind=auth_engine)
+
+
+@contextlib.contextmanager
+def get_auth_db_session() -> Generator[Session, None, None]:
+    """Context manager seguro para consultar/registrar usuarios en auth.db."""
+    session = AuthSessionLocal()
+    try:
+        yield session
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+# ================= 2. CONEXIÓN DINÁMICA MULTI-TENANT (tenant_{username}.db) =================
+# Engine inicial por defecto (para pruebas unitarias directas antes de login)
+engine: Engine = create_engine(
+    DATABASE_URL,
+    echo=False,
+    connect_args={"check_same_thread": False},
+)
+
+# Fábrica dinámica de sesiones ORM para el Tenant activo
+SessionLocal = sessionmaker(
+    autocommit=False,
+    autoflush=False,
+    expire_on_commit=False,
+    bind=engine,
+)
+
+_active_tenant_username: Optional[str] = None
+_active_tenant_db_path: Optional[Path] = None
+
+
+def get_tenant_db_path(username: str) -> Path:
+    """Retorna la ruta absoluta del archivo SQLite exclusivo del usuario: tenant_{username}.db."""
+    slug = User.sanitize_tenant_slug(username)
+    return BASE_DIR / f"tenant_{slug}.db"
+
+
+def connect_tenant_db(username: str, seed_sample_data: bool = False) -> Path:
+    """
+    Conecta el ORM (SQLAlchemy) al archivo de base de datos exclusivo del usuario (tenant_{username}.db).
+    Ejecuta Base.metadata.create_all(engine) para generar todas las tablas de Inventario,
+    Facturas, Cartera y Gastos Generales desde cero con aislamiento total.
+    """
+    global engine, _active_tenant_username, _active_tenant_db_path
+
+    # Cerrar y liberar cualquier conexión previa antes de cambiar de tenant
+    disconnect_tenant_db()
+
+    tenant_path = get_tenant_db_path(username)
+    tenant_url = f"sqlite:///{tenant_path}"
+
+    engine = create_engine(
+        tenant_url,
+        echo=False,
+        connect_args={"check_same_thread": False},
+    )
+    SessionLocal.configure(bind=engine)
+
+    # Generar las tablas de Inventario, Facturas, Clientes, Proveedores y Gastos desde cero
+    Base.metadata.create_all(bind=engine)
+    _migrate_database_schema(target_engine=engine)
+
+    if seed_sample_data:
+        _seed_demo_data_if_empty()
+
+    _active_tenant_username = username
+    _active_tenant_db_path = tenant_path
+    return tenant_path
+
+
+def disconnect_tenant_db() -> None:
+    """
+    Destruye y libera la conexión activa a la base de datos del usuario local al cerrar sesión.
+    """
+    global engine, _active_tenant_username, _active_tenant_db_path
+    try:
+        if engine is not None:
+            engine.dispose()
+    except Exception as e:
+        print(f"[Database Disconnect Warning]: {e}")
+    finally:
+        _active_tenant_username = None
+        _active_tenant_db_path = None
+
+
+def get_active_tenant_info() -> dict:
+    """Retorna información de diagnóstico sobre la sesión multi-tenant activa."""
+    return {
+        "username": _active_tenant_username,
+        "db_path": str(_active_tenant_db_path) if _active_tenant_db_path else None,
+        "db_filename": _active_tenant_db_path.name if _active_tenant_db_path else None,
+    }
 
 
 @contextlib.contextmanager
 def get_db_session() -> Generator[Session, None, None]:
     """
-    Context manager seguro para obtener y cerrar sesiones de base de datos.
+    Context manager seguro para obtener y cerrar sesiones de la base de datos del tenant activo.
     Efectúa rollback automático ante excepciones y cierra la sesión siempre.
     """
     session = SessionLocal()
@@ -45,14 +156,15 @@ def get_db_session() -> Generator[Session, None, None]:
         session.close()
 
 
-def _migrate_database_schema() -> None:
+def _migrate_database_schema(target_engine: Optional[Engine] = None) -> None:
     """
     Ejecuta migraciones automáticas en caliente para SQLite:
     - Añade columnas nuevas si no existen.
     - Normaliza campos de fecha a DateTime (YYYY-MM-DD HH:MM:SS) en facturas,
       compras a proveedores y gastos generales.
     """
-    with engine.connect() as conn:
+    active_eng = target_engine or engine
+    with active_eng.connect() as conn:
         try:
             # 1. products.presentacion y products.brand
             res_prod = conn.execute(text("PRAGMA table_info(products)"))
@@ -94,14 +206,16 @@ def _migrate_database_schema() -> None:
 
 def init_db(seed_sample_data: bool = True) -> None:
     """
-    Crea todas las tablas definidas en los modelos ORM si no existen.
-    Aplica migraciones automáticas y opcionalmente precarga datos de prueba.
+    Crea todas las tablas definidas en los modelos ORM sobre el engine actual.
+    También asegura que auth.db esté inicializada.
     """
+    init_auth_db()
     Base.metadata.create_all(bind=engine)
-    _migrate_database_schema()
+    _migrate_database_schema(target_engine=engine)
 
     if seed_sample_data:
         _seed_demo_data_if_empty()
+
 
 
 def _seed_demo_data_if_empty() -> None:

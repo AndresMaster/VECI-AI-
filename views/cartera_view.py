@@ -52,7 +52,11 @@ class CarteraView(ft.Container):
                             spacing=2,
                             controls=[
                                 ft.Text("Cartera y Contactos", size=24, weight=ft.FontWeight.BOLD, color=PastelTheme.TEXT_PRIMARY),
-                                ft.Text("Administración de clientes, cupos de crédito, abonos e inspección de facturas", size=13, color=PastelTheme.TEXT_SECONDARY)
+                                ft.Text(
+                                    "Administración de clientes, créditos, abonos y proveedores (Doble clic sobre el nombre para ver detalle o editar)",
+                                    size=13,
+                                    color=PastelTheme.TEXT_SECONDARY,
+                                )
                             ]
                         ),
                         ft.FilledButton(
@@ -122,29 +126,47 @@ class CarteraView(ft.Container):
                 create_badge("Al Día", PastelTheme.MINT_PASTEL, PastelTheme.ACCENT_MINT)
             )
 
+            email_part = f" | Email: {c['email']}" if c.get("email") else ""
+            addr_part = f" | Dir: {c['address']}" if c.get("address") else ""
+
+            # Doble clic sobre el nombre/información del cliente para ver todos los detalles y editar
+            info_detector = ft.GestureDetector(
+                mouse_cursor=ft.MouseCursor.CLICK,
+                on_double_tap=lambda _, cust=c: self._open_customer_modal(cust),
+                content=ft.Container(
+                    tooltip="Doble clic para ver detalles completos o editar cliente",
+                    content=ft.Column(
+                        spacing=3,
+                        controls=[
+                            ft.Row(
+                                spacing=8,
+                                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                                controls=[
+                                    ft.Text(c["name"], size=15, weight=ft.FontWeight.BOLD, color=PastelTheme.TEXT_PRIMARY),
+                                    debt_badge,
+                                ],
+                            ),
+                            ft.Text(
+                                f"Doc: {c['document_id'] or 'S/N'} | Tel: {c['phone'] or 'S/T'}{email_part}{addr_part}",
+                                size=12,
+                                color=PastelTheme.TEXT_SECONDARY,
+                            ),
+                            *([ft.Text(f"Notas: {c['notes']}", size=11, color=PastelTheme.TEXT_MUTED, italic=True)] if c["notes"] else []),
+                        ],
+                    ),
+                ),
+            )
+
             card = ft.Container(
                 bgcolor=PastelTheme.SURFACE_VARIANT,
                 border_radius=12,
                 padding=14,
                 content=ft.Row(
                     alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    spacing=12,
                     controls=[
-                        ft.Column(
-                            spacing=3,
-                            controls=[
-                                ft.Row([
-                                    ft.Text(c["name"], size=15, weight=ft.FontWeight.BOLD, color=PastelTheme.TEXT_PRIMARY),
-                                    debt_badge
-                                ]),
-                                ft.Text(
-                                    f"Doc: {c['document_id'] or 'S/N'} | Tel: {c['phone'] or 'S/T'} | "
-                                    f"Cupo: ${c['credit_limit']:,.0f} (Disp: ${c['available_credit']:,.0f})",
-                                    size=12,
-                                    color=PastelTheme.TEXT_SECONDARY
-                                ),
-                                *([ft.Text(f"Notas: {c['notes']}", size=11, color=PastelTheme.TEXT_MUTED, italic=True)] if c["notes"] else [])
-                            ]
-                        ),
+                        ft.Container(expand=True, content=info_detector),
                         ft.FilledButton(
                             content=ft.Row([ft.Icon(ft.Icons.RECEIPT_LONG_ROUNDED, size=16), ft.Text("Ver Créditos")]),
                             style=ft.ButtonStyle(
@@ -168,21 +190,39 @@ class CarteraView(ft.Container):
         suppliers = self.controller.get_all_suppliers()
         items = []
         for s in suppliers:
+            addr_part = f" | Dir: {s['address']}" if s.get("address") else ""
+
+            # Doble clic sobre el nombre/información del proveedor para ver todos los detalles y editar
+            info_detector = ft.GestureDetector(
+                mouse_cursor=ft.MouseCursor.CLICK,
+                on_double_tap=lambda _, sup=s: self._open_supplier_modal(sup),
+                content=ft.Container(
+                    tooltip="Doble clic para ver detalles completos o editar proveedor",
+                    content=ft.Column(
+                        spacing=3,
+                        controls=[
+                            ft.Text(s["name"], size=15, weight=ft.FontWeight.BOLD, color=PastelTheme.TEXT_PRIMARY),
+                            ft.Text(
+                                f"Contacto: {s['contact_name'] or 'N/A'} | Tel: {s['phone'] or 'N/A'} | Email: {s['email'] or 'N/A'}{addr_part}",
+                                size=12,
+                                color=PastelTheme.TEXT_SECONDARY,
+                            ),
+                            *([ft.Text(f"Condiciones: {s['notes']}", size=11, color=PastelTheme.TEXT_MUTED, italic=True)] if s["notes"] else []),
+                        ],
+                    ),
+                ),
+            )
+
             card = ft.Container(
                 bgcolor=PastelTheme.SURFACE_VARIANT,
                 border_radius=12,
                 padding=14,
                 content=ft.Row(
                     alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    spacing=12,
                     controls=[
-                        ft.Column(
-                            spacing=3,
-                            controls=[
-                                ft.Text(s["name"], size=15, weight=ft.FontWeight.BOLD, color=PastelTheme.TEXT_PRIMARY),
-                                ft.Text(f"Contacto: {s['contact_name'] or 'N/A'} | Tel: {s['phone'] or 'N/A'} | Email: {s['email'] or 'N/A'}", size=12, color=PastelTheme.TEXT_SECONDARY),
-                                *([ft.Text(f"Condiciones: {s['notes']}", size=11, color=PastelTheme.TEXT_MUTED, italic=True)] if s["notes"] else [])
-                            ]
-                        ),
+                        ft.Container(expand=True, content=info_detector),
                         create_badge("Proveedor Activo", PastelTheme.SKY_PASTEL, PastelTheme.ACCENT_SKY)
                     ]
                 )
@@ -195,54 +235,330 @@ class CarteraView(ft.Container):
 
     def _open_create_modal(self) -> None:
         if self.current_tab == "CLIENTES":
-            name_tf = ft.TextField(label="Nombre Completo", border_radius=8, dense=True)
-            doc_tf = ft.TextField(label="Documento (Cédula/NIT)", border_radius=8, dense=True)
-            phone_tf = ft.TextField(label="Teléfono", border_radius=8, dense=True)
-            credit_tf = ft.TextField(label="Cupo de Crédito ($)", value="0", border_radius=8, dense=True)
-            notes_tf = ft.TextField(label="Notas / Condiciones", border_radius=8, dense=True, multiline=True)
-
-            def save_c(_):
-                c_val = float(credit_tf.value or 0)
-                self.controller.create_customer(name_tf.value, doc_tf.value, phone_tf.value, credit_limit=c_val, notes=notes_tf.value)
-                self.page.pop_dialog()
-                self.load_data()
-
-            dialog = ft.AlertDialog(
-                title=ft.Text("Registrar Cliente (Cartera)", weight=ft.FontWeight.BOLD),
-                content=ft.Container(
-                    width=400,
-                    content=ft.Column(tight=True, spacing=10, controls=[name_tf, doc_tf, phone_tf, credit_tf, notes_tf])
-                ),
-                actions=[
-                    ft.TextButton("Cancelar", on_click=lambda _: self.page.pop_dialog()),
-                    ft.FilledButton("Guardar", bgcolor=PastelTheme.PRIMARY, color=PastelTheme.TEXT_ON_PRIMARY, on_click=save_c)
-                ]
-            )
-            self.page.show_dialog(dialog)
+            self._open_customer_modal(customer=None)
         else:
-            name_tf = ft.TextField(label="Razón Social / Nombre", border_radius=8, dense=True)
-            contact_tf = ft.TextField(label="Persona de Contacto", border_radius=8, dense=True)
-            phone_tf = ft.TextField(label="Teléfono", border_radius=8, dense=True)
-            email_tf = ft.TextField(label="Correo Electrónico", border_radius=8, dense=True)
-            notes_tf = ft.TextField(label="Notas / Días de entrega", border_radius=8, dense=True)
+            self._open_supplier_modal(supplier=None)
 
-            def save_s(_):
-                self.controller.create_supplier(name_tf.value, contact_tf.value, phone_tf.value, email_tf.value, notes=notes_tf.value)
-                self.page.pop_dialog()
-                self.load_data()
+    def _open_customer_modal(self, customer: Optional[dict] = None) -> None:
+        """
+        Modal unificado para Crear un nuevo Cliente o Inspeccionar/Editar un Cliente existente
+        (activado con doble clic sobre el nombre del cliente). Sin campo de límite de crédito.
+        """
+        is_edit = customer is not None
 
-            dialog = ft.AlertDialog(
-                title=ft.Text("Registrar Proveedor", weight=ft.FontWeight.BOLD),
-                content=ft.Container(
-                    width=400,
-                    content=ft.Column(tight=True, spacing=10, controls=[name_tf, contact_tf, phone_tf, email_tf, notes_tf])
-                ),
-                actions=[
-                    ft.TextButton("Cancelar", on_click=lambda _: self.page.pop_dialog()),
-                    ft.FilledButton("Guardar", bgcolor=PastelTheme.PRIMARY, color=PastelTheme.TEXT_ON_PRIMARY, on_click=save_s)
-                ]
+        name_tf = ft.TextField(
+            label="Nombre Completo",
+            value=customer.get("name", "") if is_edit else "",
+            border_radius=8,
+            dense=True,
+            autofocus=not is_edit,
+        )
+        doc_tf = ft.TextField(
+            label="Documento (Cédula / NIT)",
+            value=customer.get("document_id", "") if is_edit else "",
+            border_radius=8,
+            dense=True,
+        )
+        phone_tf = ft.TextField(
+            label="Teléfono / Celular",
+            value=customer.get("phone", "") if is_edit else "",
+            border_radius=8,
+            dense=True,
+        )
+        email_tf = ft.TextField(
+            label="Correo Electrónico",
+            value=customer.get("email", "") if is_edit else "",
+            border_radius=8,
+            dense=True,
+        )
+        address_tf = ft.TextField(
+            label="Dirección",
+            value=customer.get("address", "") if is_edit else "",
+            border_radius=8,
+            dense=True,
+        )
+        notes_tf = ft.TextField(
+            label="Notas / Condiciones",
+            value=customer.get("notes", "") if is_edit else "",
+            border_radius=8,
+            dense=True,
+            multiline=True,
+            min_lines=2,
+            max_lines=3,
+        )
+
+        error_text = ft.Text("", size=12, color=PastelTheme.ACCENT_CORAL, visible=False)
+
+        header_info_controls = []
+        if is_edit:
+            has_debt = customer.get("current_debt", 0) > 0
+            header_info_controls.append(
+                ft.Container(
+                    bgcolor=PastelTheme.PRIMARY_PASTEL,
+                    border_radius=10,
+                    padding=12,
+                    content=ft.Row(
+                        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        controls=[
+                            ft.Column(
+                                spacing=2,
+                                controls=[
+                                    ft.Text(
+                                        f"ID Cliente: #{customer['id']}",
+                                        size=12,
+                                        weight=ft.FontWeight.BOLD,
+                                        color=PastelTheme.PRIMARY,
+                                    ),
+                                    ft.Text(
+                                        f"Registrado: {customer.get('created_at', 'N/A')}",
+                                        size=11,
+                                        color=PastelTheme.TEXT_SECONDARY,
+                                    ),
+                                ],
+                            ),
+                            create_badge(
+                                f"Deuda: ${customer.get('current_debt', 0):,.0f}" if has_debt else "Al Día",
+                                PastelTheme.CORAL_PASTEL if has_debt else PastelTheme.MINT_PASTEL,
+                                PastelTheme.ACCENT_CORAL if has_debt else PastelTheme.ACCENT_MINT,
+                            ),
+                        ],
+                    ),
+                )
             )
-            self.page.show_dialog(dialog)
+
+        def save_customer(_):
+            if is_edit:
+                ok, msg, _ = self.controller.update_customer(
+                    customer_id=customer["id"],
+                    name=name_tf.value or "",
+                    document_id=doc_tf.value or "",
+                    phone=phone_tf.value or "",
+                    email=email_tf.value or "",
+                    address=address_tf.value or "",
+                    notes=notes_tf.value or "",
+                )
+            else:
+                ok, msg, _ = self.controller.create_customer(
+                    name=name_tf.value or "",
+                    document_id=doc_tf.value or "",
+                    phone=phone_tf.value or "",
+                    email=email_tf.value or "",
+                    address=address_tf.value or "",
+                    notes=notes_tf.value or "",
+                )
+
+            if not ok:
+                error_text.value = msg
+                error_text.visible = True
+                safe_update(error_text)
+                return
+
+            self.page.pop_dialog()
+            self.load_data()
+
+        dialog = ft.AlertDialog(
+            shape=ft.RoundedRectangleBorder(radius=16),
+            title=ft.Row(
+                spacing=8,
+                controls=[
+                    ft.Icon(
+                        ft.Icons.BADGE_ROUNDED if is_edit else ft.Icons.PERSON_ADD_ROUNDED,
+                        color=PastelTheme.PRIMARY,
+                        size=24,
+                    ),
+                    ft.Text(
+                        "Detalle y Edición de Cliente" if is_edit else "Registrar Cliente (Cartera)",
+                        weight=ft.FontWeight.BOLD,
+                        size=18,
+                    ),
+                ],
+            ),
+            content=ft.Container(
+                width=450,
+                content=ft.Column(
+                    tight=True,
+                    spacing=10,
+                    controls=[
+                        *header_info_controls,
+                        name_tf,
+                        ft.Row(spacing=10, controls=[ft.Container(expand=True, content=doc_tf), ft.Container(expand=True, content=phone_tf)]),
+                        email_tf,
+                        address_tf,
+                        notes_tf,
+                        error_text,
+                    ],
+                ),
+            ),
+            actions=[
+                ft.TextButton("Cancelar", on_click=lambda _: self.page.pop_dialog()),
+                ft.FilledButton(
+                    "Guardar Cambios" if is_edit else "Guardar Cliente",
+                    bgcolor=PastelTheme.PRIMARY,
+                    color=PastelTheme.TEXT_ON_PRIMARY,
+                    on_click=save_customer,
+                ),
+            ],
+        )
+        self.page.show_dialog(dialog)
+
+    def _open_supplier_modal(self, supplier: Optional[dict] = None) -> None:
+        """
+        Modal unificado para Crear un nuevo Proveedor o Inspeccionar/Editar un Proveedor existente
+        (activado con doble clic sobre el nombre del proveedor).
+        """
+        is_edit = supplier is not None
+
+        name_tf = ft.TextField(
+            label="Razón Social / Nombre",
+            value=supplier.get("name", "") if is_edit else "",
+            border_radius=8,
+            dense=True,
+            autofocus=not is_edit,
+        )
+        contact_tf = ft.TextField(
+            label="Persona de Contacto",
+            value=supplier.get("contact_name", "") if is_edit else "",
+            border_radius=8,
+            dense=True,
+        )
+        phone_tf = ft.TextField(
+            label="Teléfono / Celular",
+            value=supplier.get("phone", "") if is_edit else "",
+            border_radius=8,
+            dense=True,
+        )
+        email_tf = ft.TextField(
+            label="Correo Electrónico",
+            value=supplier.get("email", "") if is_edit else "",
+            border_radius=8,
+            dense=True,
+        )
+        address_tf = ft.TextField(
+            label="Dirección / Ciudad",
+            value=supplier.get("address", "") if is_edit else "",
+            border_radius=8,
+            dense=True,
+        )
+        notes_tf = ft.TextField(
+            label="Notas / Días de entrega y condiciones",
+            value=supplier.get("notes", "") if is_edit else "",
+            border_radius=8,
+            dense=True,
+            multiline=True,
+            min_lines=2,
+            max_lines=3,
+        )
+
+        error_text = ft.Text("", size=12, color=PastelTheme.ACCENT_CORAL, visible=False)
+
+        header_info_controls = []
+        if is_edit:
+            header_info_controls.append(
+                ft.Container(
+                    bgcolor=PastelTheme.SKY_PASTEL,
+                    border_radius=10,
+                    padding=12,
+                    content=ft.Row(
+                        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        controls=[
+                            ft.Column(
+                                spacing=2,
+                                controls=[
+                                    ft.Text(
+                                        f"ID Proveedor: #{supplier['id']}",
+                                        size=12,
+                                        weight=ft.FontWeight.BOLD,
+                                        color=PastelTheme.ACCENT_SKY,
+                                    ),
+                                    ft.Text(
+                                        f"Registrado: {supplier.get('created_at', 'N/A')}",
+                                        size=11,
+                                        color=PastelTheme.TEXT_SECONDARY,
+                                    ),
+                                ],
+                            ),
+                            create_badge("Proveedor Activo", PastelTheme.MINT_PASTEL, PastelTheme.ACCENT_MINT),
+                        ],
+                    ),
+                )
+            )
+
+        def save_supplier(_):
+            if is_edit:
+                ok, msg, _ = self.controller.update_supplier(
+                    supplier_id=supplier["id"],
+                    name=name_tf.value or "",
+                    contact_name=contact_tf.value or "",
+                    phone=phone_tf.value or "",
+                    email=email_tf.value or "",
+                    address=address_tf.value or "",
+                    notes=notes_tf.value or "",
+                )
+            else:
+                ok, msg, _ = self.controller.create_supplier(
+                    name=name_tf.value or "",
+                    contact_name=contact_tf.value or "",
+                    phone=phone_tf.value or "",
+                    email=email_tf.value or "",
+                    address=address_tf.value or "",
+                    notes=notes_tf.value or "",
+                )
+
+            if not ok:
+                error_text.value = msg
+                error_text.visible = True
+                safe_update(error_text)
+                return
+
+            self.page.pop_dialog()
+            self.load_data()
+
+        dialog = ft.AlertDialog(
+            shape=ft.RoundedRectangleBorder(radius=16),
+            title=ft.Row(
+                spacing=8,
+                controls=[
+                    ft.Icon(
+                        ft.Icons.LOCAL_SHIPPING_ROUNDED,
+                        color=PastelTheme.PRIMARY,
+                        size=24,
+                    ),
+                    ft.Text(
+                        "Detalle y Edición de Proveedor" if is_edit else "Registrar Proveedor",
+                        weight=ft.FontWeight.BOLD,
+                        size=18,
+                    ),
+                ],
+            ),
+            content=ft.Container(
+                width=450,
+                content=ft.Column(
+                    tight=True,
+                    spacing=10,
+                    controls=[
+                        *header_info_controls,
+                        name_tf,
+                        ft.Row(spacing=10, controls=[ft.Container(expand=True, content=contact_tf), ft.Container(expand=True, content=phone_tf)]),
+                        email_tf,
+                        address_tf,
+                        notes_tf,
+                        error_text,
+                    ],
+                ),
+            ),
+            actions=[
+                ft.TextButton("Cancelar", on_click=lambda _: self.page.pop_dialog()),
+                ft.FilledButton(
+                    "Guardar Cambios" if is_edit else "Guardar Proveedor",
+                    bgcolor=PastelTheme.PRIMARY,
+                    color=PastelTheme.TEXT_ON_PRIMARY,
+                    on_click=save_supplier,
+                ),
+            ],
+        )
+        self.page.show_dialog(dialog)
 
     # ================= HISTORIAL DE CRÉDITOS, ABONOS, PAGO TOTAL Y DRILL-DOWN =================
 

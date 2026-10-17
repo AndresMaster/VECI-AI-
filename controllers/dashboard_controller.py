@@ -573,7 +573,15 @@ class DashboardController:
         self.notify_filter_change()
         return True, "Pago a proveedor eliminado."
 
-    def get_active_suppliers_list(self) -> List[Dict[str, Any]]:
+    def get_active_suppliers_list(self, search_query: str = "") -> List[Dict[str, Any]]:
         with get_db_session() as session:
-            suppliers = session.query(Supplier).filter(Supplier.is_active == True).order_by(Supplier.name.asc()).all()
+            query = session.query(Supplier).filter(Supplier.is_active == True)
+            if search_query and search_query.strip():
+                term = f"%{search_query.strip()}%"
+                query = query.filter(
+                    Supplier.name.ilike(term)
+                    | Supplier.contact_name.ilike(term)
+                    | Supplier.phone.ilike(term)
+                )
+            suppliers = query.order_by(Supplier.name.asc()).all()
             return [s.to_dict() for s in suppliers]

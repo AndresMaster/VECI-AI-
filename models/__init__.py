@@ -1,4 +1,5 @@
 from models.base import Base
+from models.user import AuthBase, User
 from models.product import Product
 from models.customer import Customer
 from models.supplier import Supplier, SupplierPurchase, CompraProveedor
@@ -7,6 +8,8 @@ from models.expense import GastosGenerales, Expense
 
 __all__ = [
     "Base",
+    "AuthBase",
+    "User",
     "Product",
     "Customer",
     "Supplier",

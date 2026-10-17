@@ -27,6 +27,11 @@ class CustomerController:
             customers = query.order_by(Customer.name.asc()).all()
             return [c.to_dict() for c in customers]
 
+    def get_customer_by_id(self, customer_id: int) -> Optional[Dict[str, Any]]:
+        with get_db_session() as session:
+            customer = session.query(Customer).filter_by(id=customer_id).first()
+            return customer.to_dict() if customer else None
+
     def create_customer(
         self,
         name: str,
@@ -34,10 +39,9 @@ class CustomerController:
         phone: str = "",
         email: str = "",
         address: str = "",
-        credit_limit: float = 0.0,
-        notes: str = ""
+        notes: str = "",
     ) -> tuple[bool, str, Optional[Dict[str, Any]]]:
-        if not name.strip():
+        if not name or not name.strip():
             return False, "El nombre del cliente es obligatorio.", None
 
         with get_db_session() as session:
@@ -47,8 +51,9 @@ class CustomerController:
                 phone=phone.strip() if phone else None,
                 email=email.strip() if email else None,
                 address=address.strip() if address else None,
-                credit_limit=float(credit_limit),
-                notes=notes.strip() if notes else None
+                credit_limit=0.0,
+                notes=notes.strip() if notes else None,
+                created_at=datetime.now(),
             )
             session.add(customer)
             session.commit()
@@ -63,9 +68,11 @@ class CustomerController:
         phone: str = "",
         email: str = "",
         address: str = "",
-        credit_limit: float = 0.0,
-        notes: str = ""
+        notes: str = "",
     ) -> tuple[bool, str, Optional[Dict[str, Any]]]:
+        if not name or not name.strip():
+            return False, "El nombre del cliente es obligatorio.", None
+
         with get_db_session() as session:
             customer = session.query(Customer).filter_by(id=customer_id).first()
             if not customer:
@@ -76,12 +83,11 @@ class CustomerController:
             customer.phone = phone.strip() if phone else None
             customer.email = email.strip() if email else None
             customer.address = address.strip() if address else None
-            customer.credit_limit = float(credit_limit)
             customer.notes = notes.strip() if notes else None
 
             session.commit()
             session.refresh(customer)
-            return True, f"Cliente '{customer.name}' actualizado.", customer.to_dict()
+            return True, f"Cliente '{customer.name}' actualizado exitosamente.", customer.to_dict()
 
     # ================= CRÉDITOS, ABONOS Y DETALLE DE FACTURA (DRILL-DOWN) =================
 
@@ -256,6 +262,11 @@ class CustomerController:
             suppliers = query.order_by(Supplier.name.asc()).all()
             return [s.to_dict() for s in suppliers]
 
+    def get_supplier_by_id(self, supplier_id: int) -> Optional[Dict[str, Any]]:
+        with get_db_session() as session:
+            supplier = session.query(Supplier).filter_by(id=supplier_id).first()
+            return supplier.to_dict() if supplier else None
+
     def create_supplier(
         self,
         name: str,
@@ -265,7 +276,7 @@ class CustomerController:
         address: str = "",
         notes: str = ""
     ) -> tuple[bool, str, Optional[Dict[str, Any]]]:
-        if not name.strip():
+        if not name or not name.strip():
             return False, "El nombre del proveedor es obligatorio.", None
 
         with get_db_session() as session:
@@ -275,9 +286,39 @@ class CustomerController:
                 phone=phone.strip() if phone else None,
                 email=email.strip() if email else None,
                 address=address.strip() if address else None,
-                notes=notes.strip() if notes else None
+                notes=notes.strip() if notes else None,
+                created_at=datetime.now(),
             )
             session.add(supplier)
             session.commit()
             session.refresh(supplier)
             return True, f"Proveedor '{supplier.name}' registrado.", supplier.to_dict()
+
+    def update_supplier(
+        self,
+        supplier_id: int,
+        name: str,
+        contact_name: str = "",
+        phone: str = "",
+        email: str = "",
+        address: str = "",
+        notes: str = "",
+    ) -> tuple[bool, str, Optional[Dict[str, Any]]]:
+        if not name or not name.strip():
+            return False, "El nombre del proveedor es obligatorio.", None
+
+        with get_db_session() as session:
+            supplier = session.query(Supplier).filter_by(id=supplier_id).first()
+            if not supplier:
+                return False, "Proveedor no encontrado.", None
+
+            supplier.name = name.strip()
+            supplier.contact_name = contact_name.strip() if contact_name else None
+            supplier.phone = phone.strip() if phone else None
+            supplier.email = email.strip() if email else None
+            supplier.address = address.strip() if address else None
+            supplier.notes = notes.strip() if notes else None
+
+            session.commit()
+            session.refresh(supplier)
+            return True, f"Proveedor '{supplier.name}' actualizado exitosamente.", supplier.to_dict()

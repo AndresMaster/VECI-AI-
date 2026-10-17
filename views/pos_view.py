@@ -1,10 +1,11 @@
 import base64
+import threading
 import flet as ft
-from typing import Optional, Union
+from typing import Optional, Union, Dict, Any
 from config import PastelTheme
 from controllers import PosController, CustomerController
 from services.barcode_manager import BarcodeManager, ScannerMode
-from views.theme import create_card, create_badge, safe_update
+from views.theme import create_card, create_badge, safe_update, SearchableDropdown
 
 def _generate_placeholder_camera_uri() -> str:
     try:
@@ -42,6 +43,7 @@ class PosView(ft.Container):
         self.customer_ctrl = customer_controller
         self.barcode_mgr = barcode_manager
         self.padding = 20
+        self._search_debounce_timer: Optional[threading.Timer] = None
 
         # Suscribir la vista a los cambios del controlador POS (para reactividad en tiempo real)
         self.pos.subscribe(self.on_cart_changed)
@@ -56,6 +58,38 @@ class PosView(ft.Container):
             dense=True,
             expand=True,
             on_submit=self._on_barcode_submit
+        )
+
+        # Barra de búsqueda predictiva por nombre instantánea desde la 1ª letra
+        self.product_search_input = ft.TextField(
+            label="Buscar producto por nombre...",
+            hint_text="Escriba desde la 1ª letra para filtrar al instante (ej. Aceite Diana - 1000ml)...",
+            prefix_icon=ft.Icons.SEARCH_ROUNDED,
+            border_radius=PastelTheme.BORDER_RADIUS_INPUT,
+            bgcolor=PastelTheme.SURFACE_WHITE,
+            border_color=PastelTheme.BORDER_LIGHT,
+            focused_border_color=PastelTheme.PRIMARY,
+            dense=True,
+            expand=True,
+            on_change=self._on_search_input_change,
+            on_submit=self._on_search_input_submit,
+        )
+
+        # Contenedor dinámico de sugerencias de autocompletado (oculto por defecto)
+        self.suggestions_list = ft.Column(spacing=4, tight=True, scroll=ft.ScrollMode.AUTO)
+        self.suggestions_container = ft.Container(
+            visible=False,
+            bgcolor=PastelTheme.SURFACE_WHITE,
+            border_radius=10,
+            border=ft.Border.all(1, PastelTheme.PRIMARY_PASTEL),
+            padding=ft.Padding.symmetric(horizontal=8, vertical=6),
+            shadow=ft.BoxShadow(
+                spread_radius=0,
+                blur_radius=10,
+                color="#18000000",
+                offset=ft.Offset(0, 4),
+            ),
+            content=self.suggestions_list,
         )
 
         # Componentes de la tabla del carrito
@@ -80,14 +114,16 @@ class PosView(ft.Container):
             on_select=self._on_payment_type_change
         )
 
-        self.customer_dropdown = ft.Dropdown(
+        # Selector de Cliente con lista deslizante y filtrado en vivo desde la 1ª letra
+        self.customer_dropdown = SearchableDropdown(
             label="Asignar Cliente",
-            hint_text="Seleccione cliente para crédito...",
-            border_radius=8,
-            dense=True,
+            hint_text="Seleccione de la lista o escriba desde la 1ª letra...",
+            prefix_icon=ft.Icons.PERSON_SEARCH_ROUNDED,
             visible=(self.pos.payment_type == "CREDIT"),
             options=[],
-            on_select=self._on_customer_change
+            value=str(self.pos.customer_id) if self.pos.customer_id else None,
+            on_select=self._on_customer_change,
+            max_list_height=160,
         )
 
         self.credit_notes_input = ft.TextField(
@@ -226,10 +262,10 @@ class PosView(ft.Container):
                 # Tarjeta de Vista Previa de Cámara (Visible en modo Cámara)
                 self.camera_preview_card,
 
-                # Barra de escaneo rápido
+                # Barra de escaneo rápido y búsqueda manual predictiva (Autocomplete)
                 create_card(
                     content=ft.Column(
-                        spacing=6,
+                        spacing=8,
                         controls=[
                             ft.Row(
                                 controls=[
@@ -249,6 +285,8 @@ class PosView(ft.Container):
                                     )
                                 ]
                             ),
+                            self.product_search_input,
+                            self.suggestions_container,
                             self.scan_feedback_banner
                         ]
                     ),
@@ -376,19 +414,195 @@ class PosView(ft.Container):
         self.on_cart_changed()
 
     def _refresh_customer_options(self) -> None:
-        """Carga clientes disponibles para venta a crédito."""
+        """Carga clientes disponibles para venta a crédito en el selector filtrable."""
         customers = self.customer_ctrl.get_all_customers()
-        self.customer_dropdown.options = [
-            ft.dropdown.Option(str(c["id"]), f"{c['name']} (Disp: ${c['available_credit']:,.0f})")
+        options = [
+            {
+                "key": str(c["id"]),
+                "label": f"{c['name']}" + (f" ({c['document_id']})" if c.get("document_id") else ""),
+                "subtitle": f"Tel: {c['phone'] or 'S/T'}  •  Deuda actual: ${c['current_debt']:,.0f}",
+            }
             for c in customers
         ]
+        self.customer_dropdown.set_options(options, preserve_value=True)
+        expected_val = str(self.pos.customer_id) if self.pos.customer_id else None
+        if self.customer_dropdown.value != expected_val:
+            self.customer_dropdown.value = expected_val
+
+    # ================= LÓGICA DE AUTOCOMPLETADO Y BÚSQUEDA PREDICTIVA INSTANTÁNEA =================
+
+    def _on_search_input_change(self, e) -> None:
+        """
+        Filtra productos instantáneamente (0ms delay) desde la primera letra digitada (len >= 1).
+        Si el campo queda vacío, oculta inmediatamente el contenedor de sugerencias.
+        """
+        if self._search_debounce_timer is not None:
+            self._search_debounce_timer.cancel()
+            self._search_debounce_timer = None
+
+        query = (self.product_search_input.value or "").strip()
+        if len(query) < 1:
+            self.suggestions_list.controls.clear()
+            self.suggestions_container.visible = False
+            safe_update(self.suggestions_container)
+            return
+
+        # Ejecución inmediata desde la primera letra para máxima velocidad de respuesta
+        self._execute_debounced_search(query)
+
+    def _on_search_input_submit(self, e=None) -> None:
+        """Al presionar Enter en el buscador de productos, agrega la primera coincidencia."""
+        query = (self.product_search_input.value or "").strip()
+        if len(query) < 1:
+            return
+        matches = self.pos.search_products_by_name(query, limit=1)
+        if matches:
+            self._on_suggestion_selected(matches[0])
+
+    def _execute_debounced_search(self, query: str) -> None:
+        """Ejecuta la consulta SQL LIKE desde la 1ª letra y construye la lista desplegable."""
+        current_val = (self.product_search_input.value or "").strip()
+        if len(current_val) < 1:
+            self.suggestions_list.controls.clear()
+            self.suggestions_container.visible = False
+            safe_update(self.suggestions_container)
+            return
+
+        matches = self.pos.search_products_by_name(query, limit=10)
+        suggestion_tiles = []
+
+        if not matches:
+            suggestion_tiles.append(
+                ft.Container(
+                    padding=ft.Padding.symmetric(horizontal=10, vertical=8),
+                    content=ft.Row(
+                        spacing=8,
+                        controls=[
+                            ft.Icon(ft.Icons.SEARCH_OFF_ROUNDED, size=16, color=PastelTheme.TEXT_MUTED),
+                            ft.Text(
+                                f"Sin coincidencias en inventario para «{query}»",
+                                size=12,
+                                color=PastelTheme.TEXT_MUTED,
+                                italic=True,
+                            ),
+                        ],
+                    ),
+                )
+            )
+        else:
+            is_single_match = len(matches) == 1
+            for prod in matches:
+                # Concatenar nombre y presentación para evitar confusiones (ej. "Aceite Diana - 1000ml")
+                name_str = prod.get("name", "")
+                pres_str = (prod.get("presentacion") or "").strip()
+                concatenated_label = f"{name_str} - {pres_str}" if pres_str else name_str
+                stock_qty = prod.get("stock", 0)
+                stock_color = PastelTheme.ACCENT_MINT if stock_qty > 0 else PastelTheme.ACCENT_CORAL
+
+                tile = ft.Container(
+                    bgcolor=PastelTheme.PRIMARY_PASTEL if is_single_match else PastelTheme.SURFACE_VARIANT,
+                    border_radius=8,
+                    padding=ft.Padding.symmetric(horizontal=12, vertical=8),
+                    ink=True,
+                    on_click=lambda _, p=prod: self._on_suggestion_selected(p),
+                    content=ft.Row(
+                        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        controls=[
+                            ft.Row(
+                                spacing=10,
+                                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                                controls=[
+                                    ft.Icon(ft.Icons.INVENTORY_2_OUTLINED, size=18, color=PastelTheme.PRIMARY),
+                                    ft.Column(
+                                        spacing=1,
+                                        controls=[
+                                            ft.Text(
+                                                concatenated_label,
+                                                size=13,
+                                                weight=ft.FontWeight.BOLD,
+                                                color=PastelTheme.PRIMARY if is_single_match else PastelTheme.TEXT_PRIMARY,
+                                            ),
+                                            ft.Text(
+                                                f"Código: {prod.get('barcode', '')}  •  Stock disp.: {stock_qty}",
+                                                size=11,
+                                                color=stock_color if stock_qty <= 0 else PastelTheme.TEXT_SECONDARY,
+                                            ),
+                                        ],
+                                    ),
+                                ],
+                            ),
+                            ft.Row(
+                                spacing=8,
+                                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                                controls=[
+                                    *(
+                                        [create_badge("Enter / Clic", PastelTheme.MINT_PASTEL, PastelTheme.ACCENT_MINT)]
+                                        if is_single_match
+                                        else []
+                                    ),
+                                    ft.Text(
+                                        f"${prod.get('sale_price', 0.0):,.0f}",
+                                        size=13,
+                                        weight=ft.FontWeight.BOLD,
+                                        color=PastelTheme.PRIMARY,
+                                    ),
+                                    ft.Icon(ft.Icons.ADD_CIRCLE_ROUNDED, size=18, color=PastelTheme.ACCENT_MINT),
+                                ],
+                            ),
+                        ],
+                    ),
+                )
+                suggestion_tiles.append(tile)
+
+        self.suggestions_list.controls = suggestion_tiles
+        self.suggestions_container.height = 220 if len(suggestion_tiles) > 4 else None
+        self.suggestions_container.visible = True
+        safe_update(self.suggestions_container)
+
+    def _on_suggestion_selected(self, product: Dict[str, Any]) -> None:
+        """
+        Acción al hacer clic en un producto sugerido:
+        1. Cierra/oculta el contenedor dinámico de sugerencias.
+        2. Limpia el campo de búsqueda.
+        3. Invoca EXACTAMENTE la misma función del controlador usada por el escáner (add_item_to_invoice).
+        """
+        if self._search_debounce_timer is not None:
+            self._search_debounce_timer.cancel()
+            self._search_debounce_timer = None
+
+        # 1. Ocultar contenedor dinámico de sugerencias
+        self.suggestions_container.visible = False
+        self.suggestions_list.controls.clear()
+
+        # 2. Limpiar el campo de búsqueda
+        self.product_search_input.value = ""
+        safe_update(self.product_search_input)
+        safe_update(self.suggestions_container)
+
+        # 3. Invocar exactamente la misma función del controlador que usa el escáner
+        barcode = str(product.get("barcode") or "").strip()
+        target_key: Union[str, int] = barcode if barcode else int(product["id"])
+        success, msg = self.pos.add_item_to_invoice(target_key)
+        if not success:
+            self.scan_feedback_banner.value = f"⚠ {msg}"
+            self.scan_feedback_banner.color = PastelTheme.ACCENT_CORAL
+            self.scan_feedback_banner.visible = True
+            safe_update(self.scan_feedback_banner)
+        else:
+            item = self.pos.items.get(barcode)
+            if item:
+                self.scan_feedback_banner.value = f"✓ Agregado a factura: {item.display_name} — Precio: ${item.sale_price:,.0f}"
+                self.scan_feedback_banner.color = PastelTheme.ACCENT_MINT
+                self.scan_feedback_banner.visible = True
+                safe_update(self.scan_feedback_banner)
 
     def _on_barcode_submit(self) -> None:
-        code = self.barcode_input.value
+        code = (self.barcode_input.value or "").strip()
         self.barcode_input.value = ""
         safe_update(self.barcode_input)
         if code:
-            success, msg = self.pos.add_product_by_barcode(code)
+            success, msg = self.pos.add_item_to_invoice(code)
             if not success:
                 self.scan_feedback_banner.value = f"⚠ {msg}"
                 self.scan_feedback_banner.color = PastelTheme.ACCENT_CORAL
@@ -404,16 +618,17 @@ class PosView(ft.Container):
 
     def handle_external_scan(self, code: str) -> None:
         """Procesa una lectura proveniente de hardware (USB o cámara), limpiando el campo y alertando si no existe."""
+        clean_code = (code or "").strip()
         self.barcode_input.value = ""
         safe_update(self.barcode_input)
-        success, msg = self.pos.add_product_by_barcode(code)
+        success, msg = self.pos.add_item_to_invoice(clean_code)
         if not success:
             self.scan_feedback_banner.value = f"⚠ {msg}"
             self.scan_feedback_banner.color = PastelTheme.ACCENT_CORAL
             self.scan_feedback_banner.visible = True
             safe_update(self.scan_feedback_banner)
         else:
-            item = self.pos.items.get(code)
+            item = self.pos.items.get(clean_code)
             if item:
                 self.scan_feedback_banner.value = f"✓ Escaneo verificado (5/5): {item.display_name} — Precio: ${item.sale_price:,.0f}"
                 self.scan_feedback_banner.color = PastelTheme.ACCENT_MINT
@@ -422,6 +637,13 @@ class PosView(ft.Container):
 
     def on_cart_changed(self) -> None:
         """Refresca la UI reactivamente cuando el borrador cambia."""
+        self._refresh_customer_options()
+        self.payment_type_dropdown.value = self.pos.payment_type
+        is_credit = (self.pos.payment_type == "CREDIT")
+        self.customer_dropdown.visible = is_credit
+        self.credit_notes_input.visible = is_credit
+        self.credit_notes_input.value = self.pos.credit_notes
+
         items = list(self.pos.items.values())
 
         # Actualizar totales
@@ -512,10 +734,10 @@ class PosView(ft.Container):
         if is_credit:
             self._refresh_customer_options()
         self.pos.set_payment_options(ptype, self.credit_notes_input.value or "")
-        self.update()
+        safe_update(self)
 
-    def _on_customer_change(self, e) -> None:
-        cid = int(e.control.value) if e.control.value else None
+    def _on_customer_change(self, selected_val: Optional[str]) -> None:
+        cid = int(selected_val) if (selected_val and str(selected_val).isdigit()) else None
         self.pos.set_customer(cid)
 
     def _on_camera_preview_frame(self, frame_data: str) -> None:

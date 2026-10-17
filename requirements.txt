@@ -5,3 +5,5 @@ opencv-python>=4.8.0
 pyzbar>=0.1.9
 pillow>=10.0.0
 requests>=2.31.0
+werkzeug>=3.0.0
+bcrypt>=4.0.0
