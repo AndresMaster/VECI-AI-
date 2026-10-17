@@ -4,7 +4,7 @@
 ; =============================================================================
 
 #define MyAppName "VECI AI"
-#define MyAppVersion "1.0.0"
+#define MyAppVersion "1.0.1"
 #define MyAppPublisher "VECI AI Technologies"
 #define MyAppURL "https://github.com/veciai"
 #define MyAppExeName "VECI_AI.exe"
@@ -36,12 +36,12 @@ DisableReadyPage=no
 ; Ícono del Instalador y del Panel de Control (Agregar o quitar programas)
 SetupIconFile=build_assets\veci_ai_icon.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
-UninstallDisplayName={#MyAppName}
+UninstallDisplayName={#MyAppName} v{#MyAppVersion}
 CreateUninstallRegKey=yes
 
-; Archivo de salida final: installer_output\Veci_AI_Setup.exe
+; Archivo de salida final: installer_output\Veci_AI_Setup_v1.0.1.exe
 OutputDir=installer_output
-OutputBaseFilename=Veci_AI_Setup
+OutputBaseFilename=Veci_AI_Setup_v{#MyAppVersion}
 Compression=lzma2/fast
 SolidCompression=yes
 ArchitecturesInstallIn64BitMode=x64compatible
