@@ -9,7 +9,11 @@ from enum import Enum
 from typing import Callable, List, Optional, Union
 import cv2
 import numpy as np
-from pyzbar import pyzbar
+try:
+    from pyzbar import pyzbar
+except Exception as _pyzbar_err:
+    print(f"[BarcodeManager Warning] pyzbar no disponible ({_pyzbar_err}). Escáner USB permanece activo.")
+    pyzbar = None
 
 class ScannerMode(str, Enum):
     CAMERA = "CAMERA"               # Modo pruebas: Cámara web con OpenCV + pyzbar
@@ -218,7 +222,7 @@ class CameraBarcodeScanner(BaseBarcodeScanner):
                 # 2. Extracción y análisis exclusivo de la ROI (Algoritmo LectorBarr)
                 roi_frame = frame[roi_y:roi_y + roi_h, roi_x:roi_x + roi_w]
                 codigos = []
-                if roi_frame.size > 0:
+                if roi_frame.size > 0 and pyzbar is not None:
                     gray = cv2.cvtColor(roi_frame, cv2.COLOR_BGR2GRAY)
                     procesado_clahe = self.clahe.apply(gray)
                     codigos = pyzbar.decode(procesado_clahe)

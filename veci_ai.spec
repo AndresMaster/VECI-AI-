@@ -3,12 +3,15 @@
 Configuración de PyInstaller (veci_ai.spec) para VECI_AI v1.0.0.
 - Modo Directorio (Onedir) optimizado para Inno Setup en Windows y paquete .app en macOS.
 - Modo Ventana (console=False / windowed).
-- Empaqueta íconos (.ico / .icns), base de datos maestra vacía (auth.db) e imports ocultos.
+- Empaqueta íconos (.ico / .icns), base de datos maestra vacía (auth.db), cliente Flet Desktop
+  e imports ocultos (incluyendo unittest, pydoc y pyparsing requeridos por matplotlib/numpy).
 """
 
 import os
+import shutil
 import sqlite3
 import sys
+import urllib.request
 from pathlib import Path
 from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_dynamic_libs, collect_submodules
 
@@ -43,15 +46,46 @@ def ensure_empty_master_auth_db() -> Path:
     return clean_auth_db
 
 
-master_auth_db_path = ensure_empty_master_auth_db()
+def ensure_flet_desktop_client_bundled() -> None:
+    """
+    Pre-descarga el archivo del cliente nativo de Flet Desktop (flet-windows.zip o flet-macos.tar.gz)
+    dentro de flet_desktop/app/ antes de que PyInstaller empaquete los recursos, para que el
+    instalador funcione 100% offline y sin descargas en el primer arranque.
+    """
+    try:
+        import flet_desktop
+        import flet_desktop.version
 
-# Recolección automática de binarios y recursos dinámicos (pyzbar, flet, cv2)
+        bin_dir = Path(flet_desktop.get_package_bin_dir())
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        artifact = flet_desktop.get_artifact_filename()
+        target_archive = bin_dir / artifact
+        if not target_archive.exists():
+            ver = flet_desktop.version.version
+            url = f"https://github.com/flet-dev/flet/releases/download/v{ver}/{artifact}"
+            print(f"[PyInstaller Spec] Descargando cliente Flet Desktop ({artifact}) desde {url}...")
+            urllib.request.urlretrieve(url, str(target_archive))
+            print(f"[PyInstaller Spec] Cliente Flet Desktop embebido en: {target_archive}")
+    except Exception as exc:
+        print(f"[PyInstaller Spec] Aviso al preparar cliente Flet Desktop: {exc}")
+
+
+master_auth_db_path = ensure_empty_master_auth_db()
+ensure_flet_desktop_client_bundled()
+
+# Recolección automática de binarios y recursos dinámicos (pyzbar, flet, cv2, matplotlib)
 datas = [
     (str(master_auth_db_path), "."),
     (str(ASSETS_DIR), "build_assets"),
 ]
 binaries = []
 hiddenimports = [
+    # Módulos estándar requeridos en tiempo de ejecución por matplotlib, pyparsing y numpy
+    "unittest",
+    "unittest.mock",
+    "pydoc",
+    "doctest",
+    "pyparsing",
     # Core & ORM
     "sqlalchemy",
     "sqlalchemy.orm",
@@ -87,7 +121,7 @@ hiddenimports = [
     "services",
 ]
 
-for pkg in ("pyzbar", "flet", "flet_desktop"):
+for pkg in ("pyzbar", "flet", "flet_desktop", "matplotlib"):
     try:
         pkg_datas, pkg_binaries, pkg_hidden = collect_all(pkg)
         datas += pkg_datas
@@ -97,7 +131,11 @@ for pkg in ("pyzbar", "flet", "flet_desktop"):
         pass
 
 try:
-    binaries += collect_dynamic_libs("pyzbar")
+    pyzbar_libs = collect_dynamic_libs("pyzbar")
+    binaries += pyzbar_libs
+    # Copiar DLLs de pyzbar también a la raíz de _internal para resolución inmediata en Windows
+    for src_lib, _ in pyzbar_libs:
+        binaries.append((src_lib, "."))
 except Exception:
     pass
 
@@ -124,7 +162,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=["tkinter.test", "unittest", "pydoc"],
+    excludes=[],  # IMPORTANTE: No excluir unittest ni pydoc (requeridos por matplotlib y numpy)
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,

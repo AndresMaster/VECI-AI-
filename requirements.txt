@@ -1,4 +1,5 @@
 flet>=1.0.4
+flet-desktop>=1.0.4
 sqlalchemy>=2.0.0
 matplotlib>=3.8.0
 opencv-python>=4.8.0

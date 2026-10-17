@@ -1,4 +1,14 @@
+import os
+import sys
 from typing import Optional, Dict, Any
+
+# En modo ventana de PyInstaller (console=False en Windows), sys.stdout y sys.stderr son None.
+# Redirigirlos evita que librerías como Flet/rich/matplotlib fallen al escribir en consola.
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, "w", encoding="utf-8")
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, "w", encoding="utf-8")
+
 import flet as ft
 from config import APP_TITLE, PastelTheme
 from database import init_auth_db
