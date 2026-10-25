@@ -373,7 +373,7 @@ class CashFlowView(ft.Container):
                 color=amount_color,
             )
 
-            # Acción para eliminar gasto/pago si fue ingresado manualmente
+            # Acción: eliminar gasto/pago o ver detalle profundo de los productos llevados en la factura
             if source_type in ("GASTO", "PROVEEDOR"):
                 action_ctrl = ft.IconButton(
                     icon=ft.Icons.DELETE_OUTLINE_ROUNDED,
@@ -383,11 +383,23 @@ class CashFlowView(ft.Container):
                     on_click=lambda _, st=source_type, sid=source_id: self._delete_outflow_record(st, sid),
                 )
             else:
-                action_ctrl = ft.Icon(
-                    ft.Icons.VERIFIED_ROUNDED,
-                    size=18,
-                    color=PastelTheme.ACCENT_MINT,
-                    tooltip="Factura verificada en POS",
+                action_ctrl = ft.OutlinedButton(
+                    content=ft.Row(
+                        spacing=5,
+                        tight=True,
+                        controls=[
+                            ft.Icon(ft.Icons.VISIBILITY_ROUNDED, size=15, color=PastelTheme.PRIMARY),
+                            ft.Text("Ver Detalle", size=11, weight=ft.FontWeight.W_600, color=PastelTheme.PRIMARY),
+                        ],
+                    ),
+                    style=ft.ButtonStyle(
+                        bgcolor=PastelTheme.PRIMARY_PASTEL,
+                        side=ft.BorderSide(1, PastelTheme.PRIMARY),
+                        shape=ft.RoundedRectangleBorder(radius=8),
+                        padding=ft.Padding.symmetric(horizontal=10, vertical=6),
+                    ),
+                    tooltip="Ver qué productos se llevaron en esta factura",
+                    on_click=lambda _, sid=source_id: self._show_invoice_detail_modal(sid),
                 )
 
             rows.append(
@@ -403,6 +415,13 @@ class CashFlowView(ft.Container):
                         ft.DataCell(
                             ft.Container(
                                 width=460,
+                                ink=(source_type == "VENTA"),
+                                tooltip="Clic para ver los productos de la factura" if source_type == "VENTA" else None,
+                                on_click=(
+                                    (lambda _, sid=source_id: self._show_invoice_detail_modal(sid))
+                                    if source_type == "VENTA"
+                                    else None
+                                ),
                                 content=ft.Text(
                                     tx["descripcion"],
                                     size=12,
@@ -428,6 +447,379 @@ class CashFlowView(ft.Container):
         elif source_type == "PROVEEDOR":
             self.controller.delete_supplier_purchase(source_id)
         self.load_transactions()
+
+    # ================= MODAL "DETALLE DE FACTURA" EN FLUJO DE CAJA =================
+
+    def _show_invoice_detail_modal(self, invoice_id: int) -> None:
+        """
+        Abre un modal estilizado con el detalle completo de la factura desde Flujo de Caja:
+        - Cabecera: Número de factura, Fecha y Hora, Modalidad (Contado/Crédito), Estado y Cliente
+          (o 'Consumidor Final' si no se asignó cliente).
+        - Descripción / Notas e historial de abonos (si aplica).
+        - Tabla de Productos: Todos los artículos comprados con presentación, cantidad, precio unitario y subtotal.
+        """
+        details = self.controller.get_invoice_details(invoice_id)
+        if not details:
+            return
+
+        is_pending = (details["payment_status"] == "PENDING" and details["balance_due"] > 0)
+        has_abonos = (details["amount_paid"] > 0 and is_pending)
+        pay_mode_label = "Crédito" if details.get("payment_type") == "CREDIT" else "Contado (Caja)"
+
+        if not is_pending:
+            status_badge = create_badge("Pagada", PastelTheme.MINT_PASTEL, PastelTheme.ACCENT_MINT)
+        elif has_abonos:
+            status_badge = create_badge("Pendiente (Con Abono)", PastelTheme.AMBER_PASTEL, PastelTheme.ACCENT_AMBER)
+        else:
+            status_badge = create_badge("Pendiente", PastelTheme.CORAL_PASTEL, PastelTheme.ACCENT_CORAL)
+
+        mode_badge = create_badge(
+            pay_mode_label,
+            PastelTheme.SKY_PASTEL,
+            PastelTheme.ACCENT_SKY,
+        )
+
+        # 1. Cabecera de la factura
+        header_section = ft.Container(
+            bgcolor=PastelTheme.PRIMARY_PASTEL,
+            border_radius=12,
+            padding=16,
+            border=ft.Border.all(1, PastelTheme.BORDER_LIGHT),
+            content=ft.Row(
+                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                spacing=16,
+                controls=[
+                    ft.Column(
+                        spacing=6,
+                        expand=True,
+                        controls=[
+                            ft.Row(
+                                spacing=8,
+                                wrap=True,
+                                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                                controls=[
+                                    ft.Icon(ft.Icons.RECEIPT_LONG_ROUNDED, color=PastelTheme.PRIMARY, size=22),
+                                    ft.Text(
+                                        f"Factura #{details['invoice_number']}",
+                                        size=17,
+                                        weight=ft.FontWeight.BOLD,
+                                        color=PastelTheme.TEXT_PRIMARY,
+                                    ),
+                                    mode_badge,
+                                    status_badge,
+                                ],
+                            ),
+                            ft.Row(
+                                spacing=6,
+                                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                                controls=[
+                                    ft.Icon(ft.Icons.ACCESS_TIME_ROUNDED, size=14, color=PastelTheme.TEXT_SECONDARY),
+                                    ft.Text(
+                                        f"Fecha y Hora: {details['created_at']}",
+                                        size=12,
+                                        weight=ft.FontWeight.W_500,
+                                        color=PastelTheme.TEXT_SECONDARY,
+                                    ),
+                                ],
+                            ),
+                            ft.Row(
+                                spacing=6,
+                                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                                controls=[
+                                    ft.Icon(ft.Icons.PERSON_OUTLINE_ROUNDED, size=14, color=PastelTheme.TEXT_SECONDARY),
+                                    ft.Text(
+                                        f"Cliente: {details.get('customer_name') or 'Consumidor Final'}",
+                                        size=12,
+                                        weight=ft.FontWeight.W_500,
+                                        color=PastelTheme.TEXT_SECONDARY,
+                                        expand=True,
+                                    ),
+                                ],
+                            ),
+                        ],
+                    ),
+                    ft.Container(
+                        bgcolor=PastelTheme.SURFACE_WHITE,
+                        border_radius=10,
+                        padding=ft.Padding.symmetric(horizontal=16, vertical=10),
+                        border=ft.Border.all(1, PastelTheme.BORDER_LIGHT),
+                        content=ft.Column(
+                            spacing=3,
+                            horizontal_alignment=ft.CrossAxisAlignment.END,
+                            controls=[
+                                ft.Text(
+                                    "Total Factura",
+                                    size=11,
+                                    weight=ft.FontWeight.W_600,
+                                    color=PastelTheme.TEXT_SECONDARY,
+                                ),
+                                ft.Text(
+                                    f"${details['total']:,.2f}",
+                                    size=20,
+                                    weight=ft.FontWeight.BOLD,
+                                    color=PastelTheme.PRIMARY,
+                                ),
+                                *(
+                                    [
+                                        ft.Row(
+                                            spacing=10,
+                                            tight=True,
+                                            controls=[
+                                                ft.Text(
+                                                    f"Abonado: ${details['amount_paid']:,.0f}",
+                                                    size=11,
+                                                    weight=ft.FontWeight.W_600,
+                                                    color=PastelTheme.ACCENT_MINT,
+                                                ),
+                                                ft.Text(
+                                                    f"Saldo: ${details['balance_due']:,.0f}",
+                                                    size=11,
+                                                    weight=ft.FontWeight.BOLD,
+                                                    color=PastelTheme.ACCENT_CORAL if is_pending else PastelTheme.ACCENT_MINT,
+                                                ),
+                                            ],
+                                        )
+                                    ]
+                                    if details.get("payment_type") == "CREDIT" and (details["amount_paid"] > 0 or is_pending)
+                                    else []
+                                ),
+                            ],
+                        ),
+                    ),
+                ],
+            ),
+        )
+
+        # 2. Sección de Notas / Abonos (si existen)
+        payments = details.get("payments", [])
+        payment_history_controls = []
+        if payments:
+            payment_history_controls.append(ft.Divider(height=8, color=PastelTheme.BORDER_LIGHT))
+            payment_history_controls.append(
+                ft.Text(
+                    "Historial de Abonos / Pagos de esta Factura:",
+                    size=12,
+                    weight=ft.FontWeight.BOLD,
+                    color=PastelTheme.ACCENT_SKY,
+                )
+            )
+            for pay in payments:
+                kind_str = "Pago Total" if pay["payment_kind"] == "PAGO_TOTAL" else "Abono Parcial"
+                note_str = f" — {pay['notes']}" if pay.get("notes") else ""
+                payment_history_controls.append(
+                    ft.Container(
+                        bgcolor=PastelTheme.SURFACE_WHITE,
+                        border_radius=8,
+                        padding=ft.Padding.symmetric(horizontal=10, vertical=6),
+                        content=ft.Row(
+                            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                            spacing=12,
+                            controls=[
+                                ft.Text(
+                                    f"• [{pay['fecha_hora']}] {kind_str}{note_str}",
+                                    size=11,
+                                    color=PastelTheme.TEXT_PRIMARY,
+                                    expand=True,
+                                ),
+                                ft.Text(
+                                    f"-${pay['amount']:,.2f} (Saldo restante: ${pay['balance_after']:,.2f})",
+                                    size=11,
+                                    weight=ft.FontWeight.BOLD,
+                                    color=PastelTheme.ACCENT_MINT,
+                                ),
+                            ],
+                        ),
+                    )
+                )
+
+        description_section = ft.Container(
+            bgcolor=PastelTheme.AMBER_PASTEL,
+            border_radius=12,
+            padding=14,
+            border=ft.Border.all(1, PastelTheme.BORDER_LIGHT),
+            content=ft.Column(
+                spacing=6,
+                horizontal_alignment=ft.CrossAxisAlignment.START,
+                controls=[
+                    ft.Row(
+                        spacing=6,
+                        controls=[
+                            ft.Icon(ft.Icons.DESCRIPTION_OUTLINED, size=16, color=PastelTheme.ACCENT_AMBER),
+                            ft.Text(
+                                "Observaciones / Detalle de la Venta",
+                                size=12,
+                                weight=ft.FontWeight.BOLD,
+                                color=PastelTheme.TEXT_PRIMARY,
+                            ),
+                        ],
+                    ),
+                    ft.Text(
+                        details.get("description_display", "Venta registrada en Punto de Venta (POS)"),
+                        size=13,
+                        color=PastelTheme.TEXT_PRIMARY,
+                        italic=(not bool(details.get("credit_notes", "").strip())),
+                    ),
+                    *payment_history_controls,
+                ],
+            ),
+        )
+
+        # 3. Tabla de Productos llevados en la factura
+        item_rows = []
+        for item in details.get("items", []):
+            item_rows.append(
+                ft.DataRow(
+                    cells=[
+                        ft.DataCell(
+                            ft.Text(
+                                item.get("display_name") or item.get("product_name", ""),
+                                size=12,
+                                weight=ft.FontWeight.W_600,
+                                color=PastelTheme.TEXT_PRIMARY,
+                            )
+                        ),
+                        ft.DataCell(
+                            ft.Text(
+                                str(item.get("quantity", 0)),
+                                size=12,
+                                weight=ft.FontWeight.BOLD,
+                                color=PastelTheme.PRIMARY,
+                            )
+                        ),
+                        ft.DataCell(
+                            ft.Text(
+                                f"${item.get('unit_price', 0.0):,.2f}",
+                                size=12,
+                                color=PastelTheme.TEXT_SECONDARY,
+                            )
+                        ),
+                        ft.DataCell(
+                            ft.Text(
+                                f"${item.get('subtotal', 0.0):,.2f}",
+                                size=12,
+                                weight=ft.FontWeight.BOLD,
+                                color=PastelTheme.TEXT_PRIMARY,
+                            )
+                        ),
+                    ]
+                )
+            )
+
+        products_data_table = ft.DataTable(
+            width=670,
+            heading_row_color=PastelTheme.SURFACE_VARIANT,
+            heading_row_height=42,
+            data_row_min_height=44,
+            data_row_max_height=56,
+            column_spacing=28,
+            horizontal_lines=ft.BorderSide(1, PastelTheme.BORDER_LIGHT),
+            columns=[
+                ft.DataColumn(
+                    ft.Text("Producto", weight=ft.FontWeight.BOLD, size=12, color=PastelTheme.TEXT_SECONDARY)
+                ),
+                ft.DataColumn(
+                    ft.Text("Cantidad", weight=ft.FontWeight.BOLD, size=12, color=PastelTheme.TEXT_SECONDARY),
+                    numeric=True,
+                ),
+                ft.DataColumn(
+                    ft.Text("Precio Unitario", weight=ft.FontWeight.BOLD, size=12, color=PastelTheme.TEXT_SECONDARY),
+                    numeric=True,
+                ),
+                ft.DataColumn(
+                    ft.Text("Subtotal", weight=ft.FontWeight.BOLD, size=12, color=PastelTheme.TEXT_SECONDARY),
+                    numeric=True,
+                ),
+            ],
+            rows=item_rows,
+        )
+
+        table_section = ft.Container(
+            bgcolor=PastelTheme.SURFACE_WHITE,
+            border_radius=12,
+            padding=14,
+            border=ft.Border.all(1, PastelTheme.BORDER_LIGHT),
+            content=ft.Column(
+                spacing=8,
+                horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
+                controls=[
+                    ft.Row(
+                        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                        controls=[
+                            ft.Row(
+                                spacing=6,
+                                controls=[
+                                    ft.Icon(ft.Icons.SHOPPING_BAG_OUTLINED, size=17, color=PastelTheme.PRIMARY),
+                                    ft.Text(
+                                        "Productos Llevados en esta Factura",
+                                        size=13,
+                                        weight=ft.FontWeight.BOLD,
+                                        color=PastelTheme.TEXT_PRIMARY,
+                                    ),
+                                ],
+                            ),
+                            create_badge(
+                                f"{details.get('items_count', 0)} unidades",
+                                PastelTheme.MINT_PASTEL,
+                                PastelTheme.ACCENT_MINT,
+                            ),
+                        ],
+                    ),
+                    ft.Container(
+                        content=ft.Column(
+                            scroll=ft.ScrollMode.AUTO,
+                            controls=[products_data_table],
+                        ),
+                        height=220,
+                    ),
+                ],
+            ),
+        )
+
+        detail_dialog = ft.AlertDialog(
+            shape=ft.RoundedRectangleBorder(radius=18),
+            bgcolor=PastelTheme.BG_LIGHT,
+            inset_padding=ft.Padding.symmetric(horizontal=24, vertical=20),
+            title=ft.Row(
+                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                controls=[
+                    ft.Row(
+                        spacing=8,
+                        controls=[
+                            ft.Icon(ft.Icons.VISIBILITY_ROUNDED, color=PastelTheme.PRIMARY, size=24),
+                            ft.Text("Detalle de Factura de Venta", weight=ft.FontWeight.BOLD, size=18, color=PastelTheme.TEXT_PRIMARY),
+                        ],
+                    ),
+                    create_badge("Flujo de Caja", PastelTheme.SURFACE_VARIANT, PastelTheme.TEXT_SECONDARY),
+                ],
+            ),
+            content=ft.Container(
+                width=710,
+                content=ft.Column(
+                    tight=True,
+                    spacing=12,
+                    scroll=ft.ScrollMode.AUTO,
+                    controls=[
+                        header_section,
+                        description_section,
+                        table_section,
+                    ],
+                ),
+            ),
+            actions=[
+                ft.FilledButton(
+                    "Cerrar",
+                    style=ft.ButtonStyle(
+                        bgcolor=PastelTheme.PRIMARY,
+                        color=PastelTheme.TEXT_ON_PRIMARY,
+                        shape=ft.RoundedRectangleBorder(radius=10),
+                    ),
+                    on_click=lambda _: self.page.pop_dialog(),
+                )
+            ],
+        )
+        self.page.show_dialog(detail_dialog)
 
     # ================= MODALES PARA REGISTRAR EGRESOS =================
 

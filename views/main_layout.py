@@ -3,6 +3,7 @@ from typing import Optional, Callable
 from config import PastelTheme, APP_TITLE, APP_VERSION
 from views.dashboard_view import DashboardView
 from views.inventory_view import InventoryView
+from views.in_out_view import InOutView
 from views.pos_view import PosView
 from views.cartera_view import CarteraView
 from views.cash_flow_view import CashFlowView
@@ -22,6 +23,7 @@ class MainLayout(ft.Row):
         inventory_view: InventoryView,
         cartera_view: CarteraView,
         cash_flow_view: Optional[CashFlowView] = None,
+        in_out_view: Optional[InOutView] = None,
         current_username: str = "",
         on_logout: Optional[Callable[[], None]] = None,
     ):
@@ -33,8 +35,10 @@ class MainLayout(ft.Row):
             dashboard_view,
             pos_view,
             inventory_view,
-            cartera_view,
         ]
+        if in_out_view is not None:
+            self.views.append(in_out_view)
+        self.views.append(cartera_view)
         if cash_flow_view is not None:
             self.views.append(cash_flow_view)
 
@@ -64,12 +68,24 @@ class MainLayout(ft.Row):
                 selected_icon=ft.Icons.INVENTORY_2_ROUNDED,
                 label="Inventario",
             ),
+        ]
+
+        if in_out_view is not None:
+            destinations.append(
+                ft.NavigationRailDestination(
+                    icon=ft.Icons.SWAP_HORIZ_ROUNDED,
+                    selected_icon=ft.Icons.SWAP_HORIZONTAL_CIRCLE_ROUNDED,
+                    label="In/Out",
+                )
+            )
+
+        destinations.append(
             ft.NavigationRailDestination(
                 icon=ft.Icons.PEOPLE_ALT_OUTLINED,
                 selected_icon=ft.Icons.PEOPLE_ALT_ROUNDED,
                 label="Cartera",
-            ),
-        ]
+            )
+        )
 
         if cash_flow_view is not None:
             destinations.append(
@@ -195,6 +211,9 @@ class MainLayout(ft.Row):
             target_view.refresh_data()
         # Si regresamos a Inventario, refrescamos tabla
         elif isinstance(target_view, InventoryView):
+            target_view.load_products()
+        # Si navegamos a In/Out, refrescamos productos y stock
+        elif isinstance(target_view, InOutView):
             target_view.load_products()
         # Si regresamos a Cartera, refrescamos clientes
         elif isinstance(target_view, CarteraView):

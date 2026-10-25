@@ -264,7 +264,7 @@ class PosController:
                 discount=self.discount,
                 tax=0.0,
                 total=self.total,
-                credit_notes=self.credit_notes if self.payment_type == "CREDIT" else None,
+                credit_notes=self.credit_notes.strip() if (self.credit_notes and self.credit_notes.strip()) else None,
                 created_via=created_via
             )
             session.add(invoice)

@@ -3,7 +3,7 @@ from typing import Optional, Dict, Any
 from config import PastelTheme
 from controllers import InventoryController
 from services.barcode_manager import BarcodeManager, ScannerMode
-from views.theme import create_card, create_badge, safe_update
+from views.theme import create_card, create_badge, create_metric_tile, safe_update
 from views.pos_view import _INITIAL_CAMERA_URI
 
 class InventoryView(ft.Container):
@@ -39,6 +39,7 @@ class InventoryView(ft.Container):
             on_change=lambda _: self.load_products()
         )
 
+        self.summary_kpi_row = ft.Row(spacing=16)
         self.table_column = ft.Column(spacing=6, scroll=ft.ScrollMode.AUTO, expand=True)
 
         self.content = ft.Column(
@@ -87,6 +88,9 @@ class InventoryView(ft.Container):
                         ], spacing=10)
                     ]
                 ),
+
+                # Casillas de Resumen de Inventario (Total Unidades vs. Total por Nombre)
+                self.summary_kpi_row,
 
                 # Search Bar Card
                 create_card(
@@ -140,9 +144,32 @@ class InventoryView(ft.Container):
         self.load_products()
 
     def load_products(self) -> None:
-        """Carga la lista de productos filtrada desde la base de datos."""
+        """Carga la lista de productos filtrada desde la base de datos y actualiza las casillas superiores."""
         query = self.search_field.value or ""
         products = self.controller.get_all_products(query)
+        all_products = products if not query.strip() else self.controller.get_all_products("")
+
+        total_units = sum(max(0, int(p.get("stock", 0))) for p in all_products)
+        total_by_name = len(all_products)
+
+        self.summary_kpi_row.controls = [
+            create_metric_tile(
+                title="Total de Productos en Inventario",
+                value=f"{total_units:,} productos",
+                icon=ft.Icons.INVENTORY_ROUNDED,
+                bg_pastel=PastelTheme.SKY_PASTEL,
+                icon_color=PastelTheme.ACCENT_SKY,
+                subtitle="Suma total de unidades disponibles en stock",
+            ),
+            create_metric_tile(
+                title="Cantidad de Productos (Por Nombre)",
+                value=f"{total_by_name:,} productos",
+                icon=ft.Icons.CATEGORY_ROUNDED,
+                bg_pastel=PastelTheme.MINT_PASTEL,
+                icon_color=PastelTheme.ACCENT_MINT,
+                subtitle="Referencias o productos distintos registrados",
+            ),
+        ]
 
         rows = []
         for p in products:

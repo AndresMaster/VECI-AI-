@@ -1,6 +1,7 @@
 import calendar
 from datetime import datetime, date, time, timedelta
 from typing import Dict, Any, List, Optional, Tuple, Callable
+from sqlalchemy.orm import joinedload
 
 from database import get_db_session
 from models import (
@@ -200,6 +201,7 @@ class DashboardController:
             total_inventory_cost = sum(p.total_cost_value for p in products)
             total_inventory_retail = sum(p.total_retail_value for p in products)
             total_potential_profit = total_inventory_retail - total_inventory_cost
+            total_inventory_units = sum(max(0, int(p.stock or 0)) for p in products)
             low_stock_products = [p.to_dict() for p in products if p.is_low_stock]
 
             # Factor promedio de margen comercial de la tienda para proyectar compras del periodo
@@ -264,15 +266,14 @@ class DashboardController:
             period_products_retail = sum(p.total_retail_value for p in period_products)
 
             # 6. Cálculo consolidado del periodo para KPIs y Gráficas
-            # Costos Totales del Periodo:
-            # - Costo de lo vendido (COGS) + Compras a proveedores + Gastos generales
-            # (En All-Time incluye además el capital en bodega actual)
+            # Costos y Egresos del Periodo:
+            # Incluye únicamente lo pagado en facturas a proveedores y gastos generales del periodo,
+            # separando el Valor del Inventario para evitar duplicidad al ingresar mercancía.
             total_operational_outflows = supplier_expenses + general_expenses
+            period_cost = total_operational_outflows
             if is_all_time:
-                period_cost = total_inventory_cost + total_operational_outflows + sales_cogs
                 period_projected_sales = total_inventory_retail + realized_sales
             else:
-                period_cost = sales_cogs + supplier_expenses + general_expenses + period_products_cost
                 projected_from_purchases = round(supplier_expenses * avg_markup_factor, 2)
                 period_projected_sales = realized_sales + max(projected_from_purchases, period_products_retail)
 
@@ -336,6 +337,7 @@ class DashboardController:
                 "low_stock_items": low_stock_products,
                 "categories_distribution": categories_data,
                 "total_products_count": len(products),
+                "total_inventory_units": total_inventory_units,
                 "total_invoices_count": len(invoices),
                 "total_purchases_count": len(supplier_purchases),
                 "total_expenses_count": len(general_expenses_list),
@@ -488,6 +490,31 @@ class DashboardController:
             "total_egresos": round(total_egresos, 2),
             "balance_neto": round(balance_neto, 2),
         }
+
+    def get_invoice_details(self, invoice_id: int) -> Optional[Dict[str, Any]]:
+        """
+        Obtiene el detalle completo de una factura (productos llevados, cantidades,
+        precios unitarios, subtotales, abonos y cliente o 'Consumidor Final')
+        para inspección desde el módulo de Flujo de Caja.
+        """
+        with get_db_session() as session:
+            invoice = (
+                session.query(Invoice)
+                .options(
+                    joinedload(Invoice.customer),
+                    joinedload(Invoice.items).joinedload(InvoiceItem.product),
+                    joinedload(Invoice.payments),
+                )
+                .filter(Invoice.id == invoice_id)
+                .first()
+            )
+            if not invoice:
+                return None
+
+            data = invoice.to_dict()
+            raw_desc = (invoice.credit_notes or "").strip()
+            data["description_display"] = raw_desc if raw_desc else "Venta registrada en Punto de Venta (POS)"
+            return data
 
     # ================= REGISTRO DE GASTOS GENERALES Y PAGOS A PROVEEDORES =================
 

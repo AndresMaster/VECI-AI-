@@ -15,6 +15,7 @@ class InventoryController:
                 query = query.filter(
                     or_(
                         Product.name.ilike(term),
+                        Product.presentacion.ilike(term),
                         Product.barcode.ilike(term),
                         Product.category.ilike(term)
                     )
@@ -117,6 +118,43 @@ class InventoryController:
             session.commit()
             session.refresh(product)
             return True, f"Producto '{product.display_name}' actualizado.", product.to_dict()
+
+    def adjust_product_stock(
+        self,
+        product_id: int,
+        quantity_delta: int,
+    ) -> tuple[bool, str, Optional[Dict[str, Any]]]:
+        """
+        Ajusta (In/Out) la cantidad en stock de un producto sumando o restando unidades:
+        - Si quantity_delta > 0 (Entrada / In): Suma las unidades al stock actual.
+        - Si quantity_delta < 0 (Salida / Out): Resta las unidades del stock actual (sin permitir stock negativo).
+        """
+        if quantity_delta == 0:
+            return False, "La cantidad a ajustar debe ser mayor a 0.", None
+
+        with get_db_session() as session:
+            product = session.query(Product).filter_by(id=product_id, is_active=True).first()
+            if not product:
+                return False, "Producto no encontrado en el inventario.", None
+
+            previous_stock = int(product.stock or 0)
+            new_stock = previous_stock + int(quantity_delta)
+            if new_stock < 0:
+                return (
+                    False,
+                    f"No puedes restar {abs(quantity_delta)} unidades porque solo hay {previous_stock} en stock.",
+                    None,
+                )
+
+            product.stock = new_stock
+            session.commit()
+            session.refresh(product)
+            action_label = f"+{quantity_delta} añadidas" if quantity_delta > 0 else f"{quantity_delta} restadas"
+            return (
+                True,
+                f"Stock de '{product.display_name}' actualizado ({action_label}). Stock actual: {new_stock} uds.",
+                product.to_dict(),
+            )
 
     def scan_or_lookup_barcode_for_new(self, barcode: str) -> Dict[str, Any]:
         """

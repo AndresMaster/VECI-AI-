@@ -33,8 +33,9 @@ class DashboardView(ft.Container):
         # Suscribir a cambios del filtro para mantener sincronización con Libro Mayor
         self.controller.subscribe_filter_change(self._on_external_filter_sync)
 
-        # Contenedores dinámicos
-        self.kpi_row = ft.Row(spacing=14)
+        # Contenedores dinámicos (organizados en 2 filas amplias para máxima legibilidad)
+        self.kpi_row = ft.Row(spacing=16)
+        self.kpi_inventory_row = ft.Row(spacing=16)
         self.bar_chart_img = ft.Image(src=b"", fit=ft.BoxFit.CONTAIN, expand=True)
         self.pie_chart_img = ft.Image(src=b"", fit=ft.BoxFit.CONTAIN, expand=True)
         self.alerts_column = ft.Column(spacing=8, scroll=ft.ScrollMode.AUTO)
@@ -80,8 +81,9 @@ class DashboardView(ft.Container):
                 # Barra de Filtrado Temporal Avanzado (YouTube Studio / Google Calendar)
                 self.date_filter_bar,
 
-                # KPI Metrics
+                # KPI Metrics (Fila 1: Flujo Operativo | Fila 2: Valoración y Estado de Inventario)
                 self.kpi_row,
+                self.kpi_inventory_row,
 
                 # Charts Section
                 ft.Row(
@@ -211,7 +213,7 @@ class DashboardView(ft.Container):
                 f"({kpis['total_invoices_count']} ventas)"
             )
 
-        # 1. KPIs Dinámicos del Periodo
+        # 1. KPIs Dinámicos del Periodo (Fila 1: Costos/Egresos de facturas, Ventas y Utilidad)
         self.kpi_row.controls = [
             create_metric_tile(
                 title="Costos y Egresos",
@@ -243,13 +245,30 @@ class DashboardView(ft.Container):
                     f"Flujo: ${kpis['net_cash_flow']:,.0f}"
                 ),
             ),
+        ]
+
+        # 1.2 KPIs de Inventario (Fila 2: Valor Inventario separado de Costos/Egresos + Alertas de Stock)
+        inv_units = kpis.get("total_inventory_units", 0)
+        inv_refs = kpis.get("total_products_count", 0)
+        self.kpi_inventory_row.controls = [
+            create_metric_tile(
+                title="Valor Inventario",
+                value=f"${kpis['total_inventory_cost']:,.0f}",
+                icon=ft.Icons.INVENTORY_2_ROUNDED,
+                bg_pastel=PastelTheme.PRIMARY_PASTEL,
+                icon_color=PastelTheme.PRIMARY,
+                subtitle=(
+                    f"Valor venta: ${kpis['total_inventory_retail']:,.0f} | "
+                    f"{inv_units:,} uds ({inv_refs} ref.)"
+                ),
+            ),
             create_metric_tile(
                 title="Alertas de Stock",
                 value=str(kpis["low_stock_count"]),
                 icon=ft.Icons.NOTIFICATION_IMPORTANT_ROUNDED,
                 bg_pastel=PastelTheme.AMBER_PASTEL,
                 icon_color=PastelTheme.ACCENT_AMBER,
-                subtitle=f"Bodega: ${kpis['total_inventory_cost']:,.0f} inv.",
+                subtitle="Productos con stock bajo o por reabastecer",
             ),
         ]
 

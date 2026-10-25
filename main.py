@@ -25,6 +25,7 @@ from views import (
     DashboardView,
     PosView,
     InventoryView,
+    InOutView,
     CarteraView,
     CashFlowView,
     MainLayout,
@@ -160,6 +161,10 @@ def main(page: ft.Page) -> None:
         dashboard_view = DashboardView(dashboard_controller)
         pos_view = PosView(pos_controller, customer_controller, barcode_manager)
         inventory_view = InventoryView(inventory_controller, barcode_manager, pos_view)
+        in_out_view = InOutView(
+            inventory_controller,
+            on_inventory_changed=lambda: (inventory_view.load_products(), dashboard_view.refresh_data()),
+        )
         cartera_view = CarteraView(customer_controller)
         cash_flow_view = CashFlowView(dashboard_controller)
 
@@ -182,6 +187,7 @@ def main(page: ft.Page) -> None:
             dashboard_view=dashboard_view,
             pos_view=pos_view,
             inventory_view=inventory_view,
+            in_out_view=in_out_view,
             cartera_view=cartera_view,
             cash_flow_view=cash_flow_view,
             current_username=username,

@@ -127,13 +127,13 @@ class PosView(ft.Container):
         )
 
         self.credit_notes_input = ft.TextField(
-            label="Descripción opcional del crédito",
-            hint_text="Condiciones pactadas, plazo o referencias...",
+            label="Descripción opcional de la venta",
+            hint_text="Observaciones, notas o condiciones de la venta...",
             border_radius=8,
             dense=True,
             multiline=True,
             max_lines=3,
-            visible=(self.pos.payment_type == "CREDIT"),
+            visible=True,
             value=self.pos.credit_notes,
             on_change=lambda e: self.pos.set_payment_options(self.pos.payment_type, e.control.value)
         )
@@ -335,13 +335,15 @@ class PosView(ft.Container):
                             )
                         ),
 
-                        # Columna Derecha: Panel de Liquidación y Cobro
+                        # Columna Derecha: Panel de Liquidación y Cobro (con scroll vertical adaptable a cualquier resolución)
                         create_card(
                             expand=2,
                             padding=20,
                             content=ft.Column(
                                 expand=True,
                                 spacing=14,
+                                scroll=ft.ScrollMode.AUTO,
+                                horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
                                 controls=[
                                     ft.Text("Resumen de Cobro", size=18, weight=ft.FontWeight.BOLD, color=PastelTheme.TEXT_PRIMARY),
                                     ft.Divider(color=PastelTheme.BORDER_LIGHT, height=1),
@@ -369,7 +371,7 @@ class PosView(ft.Container):
                                     self.customer_dropdown,
                                     self.credit_notes_input,
 
-                                    ft.Container(expand=True), # Spacer
+                                    ft.Container(height=6),
 
                                     # Botones de Acción
                                     ft.FilledButton(
@@ -641,7 +643,10 @@ class PosView(ft.Container):
         self.payment_type_dropdown.value = self.pos.payment_type
         is_credit = (self.pos.payment_type == "CREDIT")
         self.customer_dropdown.visible = is_credit
-        self.credit_notes_input.visible = is_credit
+        self.credit_notes_input.visible = True
+        self.credit_notes_input.label = (
+            "Descripción opcional del crédito" if is_credit else "Descripción opcional de la venta"
+        )
         self.credit_notes_input.value = self.pos.credit_notes
 
         items = list(self.pos.items.values())
@@ -730,7 +735,10 @@ class PosView(ft.Container):
         ptype = e.control.value
         is_credit = (ptype == "CREDIT")
         self.customer_dropdown.visible = is_credit
-        self.credit_notes_input.visible = is_credit
+        self.credit_notes_input.visible = True
+        self.credit_notes_input.label = (
+            "Descripción opcional del crédito" if is_credit else "Descripción opcional de la venta"
+        )
         if is_credit:
             self._refresh_customer_options()
         self.pos.set_payment_options(ptype, self.credit_notes_input.value or "")
