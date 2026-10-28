@@ -25,6 +25,12 @@ class InOutView(ft.Container):
 
         self.summary_kpi_row = ft.Row(spacing=16)
 
+        # Estado de Paginación Server-Side / SQLite (LIMIT 50 OFFSET X)
+        self.current_page: int = 1
+        self.page_size: int = 50
+        self.total_pages: int = 1
+        self.total_records: int = 0
+
         self.search_field = ft.TextField(
             hint_text="Buscar producto por nombre, presentación o código de barras para ajustar cantidad...",
             prefix_icon=ft.Icons.SEARCH_ROUNDED,
@@ -33,7 +39,7 @@ class InOutView(ft.Container):
             border_color=PastelTheme.BORDER_LIGHT,
             dense=True,
             expand=True,
-            on_change=lambda _: self.load_products(),
+            on_change=self._on_search_change,
         )
 
         self.feedback_banner = ft.Container(
@@ -52,6 +58,71 @@ class InOutView(ft.Container):
         )
 
         self.table_column = ft.Column(spacing=6, scroll=ft.ScrollMode.AUTO, expand=True)
+
+        self.prev_page_btn = ft.OutlinedButton(
+            content=ft.Row(
+                spacing=4,
+                tight=True,
+                controls=[
+                    ft.Icon(ft.Icons.CHEVRON_LEFT_ROUNDED, size=18),
+                    ft.Text("Anterior", size=12, weight=ft.FontWeight.W_600),
+                ],
+            ),
+            disabled=True,
+            style=ft.ButtonStyle(
+                shape=ft.RoundedRectangleBorder(radius=8),
+                padding=ft.Padding.symmetric(horizontal=12, vertical=8),
+            ),
+            on_click=self._on_prev_page,
+        )
+        self.page_indicator_text = ft.Text(
+            "Página 1 de 1",
+            size=13,
+            weight=ft.FontWeight.BOLD,
+            color=PastelTheme.TEXT_PRIMARY,
+        )
+        self.records_range_text = ft.Text(
+            "0 registros",
+            size=12,
+            color=PastelTheme.TEXT_SECONDARY,
+        )
+        self.next_page_btn = ft.OutlinedButton(
+            content=ft.Row(
+                spacing=4,
+                tight=True,
+                controls=[
+                    ft.Text("Siguiente", size=12, weight=ft.FontWeight.W_600),
+                    ft.Icon(ft.Icons.CHEVRON_RIGHT_ROUNDED, size=18),
+                ],
+            ),
+            disabled=True,
+            style=ft.ButtonStyle(
+                shape=ft.RoundedRectangleBorder(radius=8),
+                padding=ft.Padding.symmetric(horizontal=12, vertical=8),
+            ),
+            on_click=self._on_next_page,
+        )
+        self.pagination_bar = ft.Container(
+            bgcolor=PastelTheme.SURFACE_VARIANT,
+            padding=ft.Padding.symmetric(horizontal=16, vertical=8),
+            border_radius=8,
+            content=ft.Row(
+                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                controls=[
+                    self.records_range_text,
+                    ft.Row(
+                        spacing=12,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        controls=[
+                            self.prev_page_btn,
+                            self.page_indicator_text,
+                            self.next_page_btn,
+                        ],
+                    ),
+                ],
+            ),
+        )
 
         self.content = ft.Column(
             expand=True,
@@ -184,6 +255,7 @@ class InOutView(ft.Container):
                                 ),
                             ),
                             self.table_column,
+                            self.pagination_bar,
                         ],
                     ),
                 ),
@@ -192,19 +264,51 @@ class InOutView(ft.Container):
 
         self.load_products()
 
-    def _clear_search(self, _=None) -> None:
-        self.search_field.value = ""
+    def _on_search_change(self, _=None) -> None:
+        self.current_page = 1
         self.load_products()
 
-    def load_products(self) -> None:
-        """Carga los productos filtrados y actualiza las métricas de stock y valor de inventario."""
-        query = self.search_field.value or ""
-        products = self.controller.get_all_products(query)
-        all_products = products if not query.strip() else self.controller.get_all_products("")
+    def _clear_search(self, _=None) -> None:
+        self.search_field.value = ""
+        self.current_page = 1
+        self.load_products()
 
-        total_units = sum(max(0, int(p.get("stock", 0))) for p in all_products)
-        total_by_name = len(all_products)
-        total_inv_cost = sum(float(p.get("total_cost_value", 0.0)) for p in all_products)
+    def _on_prev_page(self, _=None) -> None:
+        if self.current_page > 1:
+            self.current_page -= 1
+            self.load_products()
+
+    def _on_next_page(self, _=None) -> None:
+        if self.current_page < self.total_pages:
+            self.current_page += 1
+            self.load_products()
+
+    def load_products(self) -> None:
+        """Carga únicamente 50 productos por página (LIMIT 50 OFFSET X) y actualiza métricas de inventario."""
+        query = self.search_field.value or ""
+        paginated = self.controller.get_products_paginated(
+            search_query=query,
+            page=self.current_page,
+            page_size=self.page_size,
+        )
+        products = paginated["items"]
+        self.current_page = paginated["page"]
+        self.total_pages = paginated["total_pages"]
+        self.total_records = paginated["total_records"]
+        offset_val = paginated["offset"]
+
+        total_units = paginated["total_units"]
+        total_by_name = paginated["total_by_name"]
+        total_inv_cost = paginated["total_inventory_cost"]
+
+        start_idx = (offset_val + 1) if self.total_records > 0 else 0
+        end_idx = min(offset_val + len(products), self.total_records)
+        self.page_indicator_text.value = f"Página {self.current_page} de {self.total_pages}"
+        self.records_range_text.value = (
+            f"Mostrando {start_idx}–{end_idx} de {self.total_records:,} productos (50 por página)"
+        )
+        self.prev_page_btn.disabled = (self.current_page <= 1)
+        self.next_page_btn.disabled = (self.current_page >= self.total_pages)
 
         self.summary_kpi_row.controls = [
             create_metric_tile(

@@ -5,6 +5,7 @@ from models.customer import Customer
 from models.supplier import Supplier, SupplierPurchase, CompraProveedor
 from models.invoice import Invoice, InvoiceItem, InvoicePayment
 from models.expense import GastosGenerales, Expense
+from models.audit_log import RegistroAnulaciones, AuditLog
 
 __all__ = [
     "Base",
@@ -20,4 +21,6 @@ __all__ = [
     "InvoicePayment",
     "GastosGenerales",
     "Expense",
+    "RegistroAnulaciones",
+    "AuditLog",
 ]

@@ -1,13 +1,119 @@
+import math
 from typing import List, Optional, Dict, Any
-from sqlalchemy import or_
+from sqlalchemy import or_, func, case
 
 from database import get_db_session
 from models import Product
 
 class InventoryController:
-    """Controlador CRUD y de lógica de inventario."""
+    """Controlador CRUD y de lógica de inventario con paginación SQL (LIMIT / OFFSET)."""
 
-    def get_all_products(self, search_query: str = "") -> List[Dict[str, Any]]:
+    def get_inventory_summary(self) -> Dict[str, Any]:
+        """
+        Calcula instantáneamente en SQLite (sin cargar objetos ORM en memoria)
+        las métricas globales del inventario para las tarjetas KPI superiores.
+        """
+        with get_db_session() as session:
+            row = (
+                session.query(
+                    func.count(Product.id),
+                    func.coalesce(
+                        func.sum(case((Product.stock > 0, Product.stock), else_=0)),
+                        0,
+                    ),
+                    func.coalesce(func.sum(Product.cost_price * Product.stock), 0.0),
+                    func.coalesce(func.sum(Product.sale_price * Product.stock), 0.0),
+                )
+                .filter(Product.is_active == True)
+                .first()
+            )
+            total_by_name = int(row[0] or 0) if row else 0
+            total_units = int(row[1] or 0) if row else 0
+            total_cost = round(float(row[2] or 0.0), 2) if row else 0.0
+            total_retail = round(float(row[3] or 0.0), 2) if row else 0.0
+            return {
+                "total_by_name": total_by_name,
+                "total_units": total_units,
+                "total_cost_value": total_cost,
+                "total_retail_value": total_retail,
+            }
+
+    def get_products_paginated(
+        self,
+        search_query: str = "",
+        page: int = 1,
+        page_size: int = 50,
+    ) -> Dict[str, Any]:
+        """
+        Consulta paginada a nivel de motor SQLite usando estrictamente `LIMIT 50 OFFSET X`.
+        Retorna únicamente los registros de la página solicitada junto con los metadatos
+        de paginación y los totales agregados del inventario.
+        """
+        page_size = max(1, int(page_size or 50))
+        requested_page = max(1, int(page or 1))
+
+        with get_db_session() as session:
+            base_query = session.query(Product).filter(Product.is_active == True)
+            if search_query and search_query.strip():
+                term = f"%{search_query.strip()}%"
+                base_query = base_query.filter(
+                    or_(
+                        Product.name.ilike(term),
+                        Product.presentacion.ilike(term),
+                        Product.barcode.ilike(term),
+                        Product.category.ilike(term),
+                    )
+                )
+
+            total_records = int(base_query.count() or 0)
+            total_pages = max(1, math.ceil(total_records / page_size))
+            current_page = min(requested_page, total_pages)
+            offset_val = (current_page - 1) * page_size
+
+            # Consulta SQLite con LIMIT 50 OFFSET X
+            products = (
+                base_query.order_by(Product.name.asc())
+                .limit(page_size)
+                .offset(offset_val)
+                .all()
+            )
+            items = [p.to_dict() for p in products]
+
+            # Resumen global mediante agregación SQL directa
+            summary_row = (
+                session.query(
+                    func.count(Product.id),
+                    func.coalesce(
+                        func.sum(case((Product.stock > 0, Product.stock), else_=0)),
+                        0,
+                    ),
+                    func.coalesce(func.sum(Product.cost_price * Product.stock), 0.0),
+                )
+                .filter(Product.is_active == True)
+                .first()
+            )
+            total_by_name = int(summary_row[0] or 0) if summary_row else 0
+            total_units = int(summary_row[1] or 0) if summary_row else 0
+            total_inv_cost = round(float(summary_row[2] or 0.0), 2) if summary_row else 0.0
+
+            return {
+                "items": items,
+                "page": current_page,
+                "page_size": page_size,
+                "total_records": total_records,
+                "total_pages": total_pages,
+                "offset": offset_val,
+                "total_by_name": total_by_name,
+                "total_units": total_units,
+                "total_inventory_cost": total_inv_cost,
+            }
+
+    def get_all_products(
+        self,
+        search_query: str = "",
+        limit: Optional[int] = None,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
         with get_db_session() as session:
             query = session.query(Product).filter(Product.is_active == True)
             if search_query.strip():
@@ -20,7 +126,12 @@ class InventoryController:
                         Product.category.ilike(term)
                     )
                 )
-            products = query.order_by(Product.name.asc()).all()
+            query = query.order_by(Product.name.asc())
+            if offset > 0:
+                query = query.offset(offset)
+            if limit is not None and limit > 0:
+                query = query.limit(limit)
+            products = query.all()
             return [p.to_dict() for p in products]
 
     def get_product_by_id(self, product_id: int) -> Optional[Dict[str, Any]]:

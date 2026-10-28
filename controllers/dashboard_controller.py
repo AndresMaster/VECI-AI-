@@ -1,6 +1,8 @@
 import calendar
+import math
 from datetime import datetime, date, time, timedelta
 from typing import Dict, Any, List, Optional, Tuple, Callable
+from sqlalchemy import func, case, literal, union_all
 from sqlalchemy.orm import joinedload
 
 from database import get_db_session
@@ -11,6 +13,7 @@ from models import (
     Supplier,
     SupplierPurchase,
     GastosGenerales,
+    RegistroAnulaciones,
 )
 
 
@@ -179,11 +182,14 @@ class DashboardController:
         start_date: Optional[datetime] = None,
         end_date: Optional[datetime] = None,
         use_active_filter_if_none: bool = True,
+        low_stock_page: int = 1,
+        low_stock_page_size: int = 50,
     ) -> Dict[str, Any]:
         """
         Recalcula dinámicamente TODAS las métricas y gráficas (Costos, Ventas Proyectadas,
         Ventas Realizadas, Egresos, Utilidad Real y Distribución por Categorías)
         basándose únicamente en el rango (start_date, end_date).
+        Usa agregación SQL directa y paginación LIMIT 50 OFFSET X para evitar congelamientos con >900 productos.
         """
         period_label = "Desde el inicio (Todo el historial)"
         if start_date is None and end_date is None and use_active_filter_if_none:
@@ -194,15 +200,46 @@ class DashboardController:
             period_label = f"{s_txt} — {e_txt}"
 
         is_all_time = (start_date is None and end_date is None)
+        low_stock_page_size = max(1, int(low_stock_page_size or 50))
+        requested_ls_page = max(1, int(low_stock_page or 1))
 
         with get_db_session() as session:
-            # 1. Productos activos y valoración base de bodega
-            products = session.query(Product).filter(Product.is_active == True).all()
-            total_inventory_cost = sum(p.total_cost_value for p in products)
-            total_inventory_retail = sum(p.total_retail_value for p in products)
+            # 1. Valoración de inventario mediante agregación SQL directa (sin instanciar 900+ objetos ORM)
+            inv_agg = (
+                session.query(
+                    func.count(Product.id),
+                    func.coalesce(func.sum(Product.cost_price * Product.stock), 0.0),
+                    func.coalesce(func.sum(Product.sale_price * Product.stock), 0.0),
+                    func.coalesce(
+                        func.sum(case((Product.stock > 0, Product.stock), else_=0)),
+                        0,
+                    ),
+                )
+                .filter(Product.is_active == True)
+                .first()
+            )
+            total_products_count = int(inv_agg[0] or 0) if inv_agg else 0
+            total_inventory_cost = float(inv_agg[1] or 0.0) if inv_agg else 0.0
+            total_inventory_retail = float(inv_agg[2] or 0.0) if inv_agg else 0.0
+            total_inventory_units = int(inv_agg[3] or 0) if inv_agg else 0
             total_potential_profit = total_inventory_retail - total_inventory_cost
-            total_inventory_units = sum(max(0, int(p.stock or 0)) for p in products)
-            low_stock_products = [p.to_dict() for p in products if p.is_low_stock]
+
+            # 1.1 Alertas de Stock Bajo paginadas con LIMIT 50 OFFSET X en SQLite
+            low_stock_q = session.query(Product).filter(
+                Product.is_active == True,
+                Product.stock <= Product.min_stock,
+            )
+            low_stock_count = int(low_stock_q.count() or 0)
+            low_stock_total_pages = max(1, math.ceil(low_stock_count / low_stock_page_size))
+            current_ls_page = min(requested_ls_page, low_stock_total_pages)
+            low_stock_offset = (current_ls_page - 1) * low_stock_page_size
+            low_stock_products = [
+                p.to_dict()
+                for p in low_stock_q.order_by(Product.stock.asc(), Product.name.asc())
+                .limit(low_stock_page_size)
+                .offset(low_stock_offset)
+                .all()
+            ]
 
             # Factor promedio de margen comercial de la tienda para proyectar compras del periodo
             avg_markup_factor = (
@@ -210,9 +247,12 @@ class DashboardController:
                 if total_inventory_cost > 0 else 1.38
             )
 
-            # Mapa rápido de product_id -> categoría
+            # Mapa ligero de product_id -> categoría (tuplas SQL sin construir objetos ORM)
             product_category_map: Dict[int, str] = {
-                p.id: (p.category or "General") for p in products
+                pid: (cat or "General")
+                for pid, cat in session.query(Product.id, Product.category)
+                .filter(Product.is_active == True)
+                .all()
             }
 
             # 2. Facturas / Ventas filtradas por el rango DateTime
@@ -251,24 +291,24 @@ class DashboardController:
             general_expenses_list = exp_query.all()
             general_expenses = sum(g.monto for g in general_expenses_list)
 
-            # 5. Productos registrados/actualizados dentro del periodo
+            # 5. Productos registrados/actualizados dentro del periodo (vía agregación SQL)
             if is_all_time:
-                period_products = products
+                period_products_cost = total_inventory_cost
+                period_products_retail = total_inventory_retail
             else:
-                prod_period_q = session.query(Product).filter(Product.is_active == True)
+                prod_period_agg = session.query(
+                    func.coalesce(func.sum(Product.cost_price * Product.stock), 0.0),
+                    func.coalesce(func.sum(Product.sale_price * Product.stock), 0.0),
+                ).filter(Product.is_active == True)
                 if start_date is not None:
-                    prod_period_q = prod_period_q.filter(Product.updated_at >= start_date)
+                    prod_period_agg = prod_period_agg.filter(Product.updated_at >= start_date)
                 if end_date is not None:
-                    prod_period_q = prod_period_q.filter(Product.updated_at <= end_date)
-                period_products = prod_period_q.all()
-
-            period_products_cost = sum(p.total_cost_value for p in period_products)
-            period_products_retail = sum(p.total_retail_value for p in period_products)
+                    prod_period_agg = prod_period_agg.filter(Product.updated_at <= end_date)
+                pp_row = prod_period_agg.first()
+                period_products_cost = float(pp_row[0] or 0.0) if pp_row else 0.0
+                period_products_retail = float(pp_row[1] or 0.0) if pp_row else 0.0
 
             # 6. Cálculo consolidado del periodo para KPIs y Gráficas
-            # Costos y Egresos del Periodo:
-            # Incluye únicamente lo pagado en facturas a proveedores y gastos generales del periodo,
-            # separando el Valor del Inventario para evitar duplicidad al ingresar mercancía.
             total_operational_outflows = supplier_expenses + general_expenses
             period_cost = total_operational_outflows
             if is_all_time:
@@ -277,40 +317,43 @@ class DashboardController:
                 projected_from_purchases = round(supplier_expenses * avg_markup_factor, 2)
                 period_projected_sales = realized_sales + max(projected_from_purchases, period_products_retail)
 
-            # Utilidad Real Neta del periodo:
-            # Utilidad bruta de las ventas realizadas menos los gastos generales del periodo
             real_net_profit = gross_sales_profit - general_expenses
-            # Flujo neto de caja del periodo (Ingresos por ventas - Pagos a proveedores - Gastos generales)
             net_cash_flow = realized_sales - supplier_expenses - general_expenses
-            # Utilidad proyectada del periodo
             period_potential_profit = period_projected_sales - period_cost
 
             # 7. Distribución dinámica por categorías para el Gráfico de Torta del periodo
             categories_data: Dict[str, float] = {}
 
-            # Aportación de las ventas del periodo por categoría de producto
             for inv in invoices:
                 for item in inv.items:
                     cat = product_category_map.get(item.product_id, "Ventas Generales") if item.product_id else "Ventas POS"
                     categories_data[cat] = categories_data.get(cat, 0.0) + float(item.subtotal or 0.0)
 
-            # Aportación de los gastos generales del periodo por categoría
             for exp in general_expenses_list:
                 cat_key = f"Gasto: {exp.categoria}"
                 categories_data[cat_key] = categories_data.get(cat_key, 0.0) + float(exp.monto or 0.0)
 
-            # Aportación de compras a proveedores del periodo
             if supplier_expenses > 0:
                 categories_data["Compras Proveedores"] = (
                     categories_data.get("Compras Proveedores", 0.0) + float(supplier_expenses)
                 )
 
-            # Si estamos en All-Time (o si aún no hay transacciones pero sí productos creados en el periodo),
-            # complementar con la valoración por categoría de productos del periodo
             if is_all_time or not categories_data:
-                for p in period_products:
-                    cat = p.category or "Otros"
-                    categories_data[cat] = categories_data.get(cat, 0.0) + p.total_retail_value
+                cat_q = (
+                    session.query(
+                        Product.category,
+                        func.coalesce(func.sum(Product.sale_price * Product.stock), 0.0),
+                    )
+                    .filter(Product.is_active == True)
+                )
+                if not is_all_time:
+                    if start_date is not None:
+                        cat_q = cat_q.filter(Product.updated_at >= start_date)
+                    if end_date is not None:
+                        cat_q = cat_q.filter(Product.updated_at <= end_date)
+                for cat_name, retail_sum in cat_q.group_by(Product.category).all():
+                    cat = cat_name or "Otros"
+                    categories_data[cat] = categories_data.get(cat, 0.0) + float(retail_sum or 0.0)
 
             return {
                 "period_label": period_label,
@@ -329,14 +372,18 @@ class DashboardController:
                 "total_realized_profit": round(real_net_profit, 2),
                 "net_cash_flow": round(net_cash_flow, 2),
                 "pending_credits": round(pending_credits, 2),
-                # Métricas de inventario físico en bodega (compatibilidad y alertas)
+                # Métricas de inventario físico en bodega y alertas paginadas (LIMIT 50 OFFSET X)
                 "total_inventory_cost": round(total_inventory_cost, 2),
                 "total_inventory_retail": round(total_inventory_retail, 2),
                 "total_potential_profit": round(total_potential_profit, 2),
-                "low_stock_count": len(low_stock_products),
+                "low_stock_count": low_stock_count,
                 "low_stock_items": low_stock_products,
+                "low_stock_page": current_ls_page,
+                "low_stock_page_size": low_stock_page_size,
+                "low_stock_total_pages": low_stock_total_pages,
+                "low_stock_offset": low_stock_offset,
                 "categories_distribution": categories_data,
-                "total_products_count": len(products),
+                "total_products_count": total_products_count,
                 "total_inventory_units": total_inventory_units,
                 "total_invoices_count": len(invoices),
                 "total_purchases_count": len(supplier_purchases),
@@ -353,9 +400,11 @@ class DashboardController:
         search_query: str = "",
         use_active_filter_if_none: bool = True,
         descending: bool = True,
+        page: int = 1,
+        page_size: int = 50,
     ) -> Dict[str, Any]:
         """
-        Consolida y ordena cronológicamente por Fecha y Hora exacta:
+        Consolida, ordena cronológicamente y pagina (LIMIT 50 OFFSET X) en SQLite:
         1. Ventas realizadas (Ingresos).
         2. Pagos a proveedores (Egresos de inventario).
         3. Gastos generales (Egresos fijos/variables como recibos de luz).
@@ -368,122 +417,298 @@ class DashboardController:
             e_txt = end_date.strftime("%d/%m/%Y") if end_date else "Hoy"
             period_label = f"{s_txt} — {e_txt}"
 
-        unified_rows: List[Dict[str, Any]] = []
+        page_size = max(1, int(page_size or 50))
+        requested_page = max(1, int(page or 1))
+        has_search = bool(search_query and search_query.strip())
+
         total_ingresos = 0.0
         total_pagos_proveedores = 0.0
         total_gastos_generales = 0.0
 
         with get_db_session() as session:
-            # 1. Ventas realizadas (Ingresos)
-            if type_filter in ("ALL", "VENTA"):
-                inv_q = session.query(Invoice).filter(Invoice.payment_status != "CANCELLED")
-                if start_date is not None:
-                    inv_q = inv_q.filter(Invoice.created_at >= start_date)
-                if end_date is not None:
-                    inv_q = inv_q.filter(Invoice.created_at <= end_date)
+            if not has_search:
+                # Paginación directa en motor SQLite usando UNION ALL + LIMIT 50 OFFSET X
+                subqueries = []
 
-                for inv in inv_q.all():
-                    dt = inv.created_at or datetime.now()
-                    customer_name = inv.customer.name if inv.customer else "Consumidor Final"
-                    items_qty = sum(i.quantity for i in inv.items)
-                    pay_badge = "Crédito" if inv.payment_type == "CREDIT" else "Contado"
-                    desc = f"Factura #{inv.invoice_number} — {customer_name} ({items_qty} uds, {pay_badge})"
-                    amount = round(float(inv.total or 0.0), 2)
-                    total_ingresos += amount
+                if type_filter in ("ALL", "VENTA"):
+                    inv_sum_q = session.query(
+                        func.count(Invoice.id),
+                        func.coalesce(func.sum(Invoice.total), 0.0),
+                    ).filter(Invoice.payment_status != "CANCELLED")
+                    inv_sel = session.query(
+                        literal("VENTA").label("source_type"),
+                        Invoice.id.label("source_id"),
+                        Invoice.created_at.label("ts"),
+                    ).filter(Invoice.payment_status != "CANCELLED")
+                    if start_date is not None:
+                        inv_sum_q = inv_sum_q.filter(Invoice.created_at >= start_date)
+                        inv_sel = inv_sel.filter(Invoice.created_at >= start_date)
+                    if end_date is not None:
+                        inv_sum_q = inv_sum_q.filter(Invoice.created_at <= end_date)
+                        inv_sel = inv_sel.filter(Invoice.created_at <= end_date)
+                    inv_cnt, inv_sum = inv_sum_q.first() or (0, 0.0)
+                    total_ingresos = round(float(inv_sum or 0.0), 2)
+                    subqueries.append((int(inv_cnt or 0), inv_sel))
 
-                    unified_rows.append({
-                        "uid": f"INV-{inv.id}",
-                        "source_id": inv.id,
-                        "source_type": "VENTA",
-                        "tipo": "Venta",
-                        "timestamp": dt,
-                        "fecha": dt.strftime("%Y-%m-%d"),
-                        "hora": dt.strftime("%H:%M:%S"),
-                        "descripcion": desc,
-                        "monto": amount,
-                        "is_income": True,
-                    })
+                if type_filter in ("ALL", "PROVEEDOR"):
+                    sp_sum_q = session.query(
+                        func.count(SupplierPurchase.id),
+                        func.coalesce(func.sum(SupplierPurchase.monto), 0.0),
+                    )
+                    sp_sel = session.query(
+                        literal("PROVEEDOR").label("source_type"),
+                        SupplierPurchase.id.label("source_id"),
+                        SupplierPurchase.fecha_hora.label("ts"),
+                    )
+                    if start_date is not None:
+                        sp_sum_q = sp_sum_q.filter(SupplierPurchase.fecha_hora >= start_date)
+                        sp_sel = sp_sel.filter(SupplierPurchase.fecha_hora >= start_date)
+                    if end_date is not None:
+                        sp_sum_q = sp_sum_q.filter(SupplierPurchase.fecha_hora <= end_date)
+                        sp_sel = sp_sel.filter(SupplierPurchase.fecha_hora <= end_date)
+                    sp_cnt, sp_sum = sp_sum_q.first() or (0, 0.0)
+                    total_pagos_proveedores = round(float(sp_sum or 0.0), 2)
+                    subqueries.append((int(sp_cnt or 0), sp_sel))
 
-            # 2. Pagos a proveedores (Egresos de inventario)
-            if type_filter in ("ALL", "PROVEEDOR"):
-                sp_q = session.query(SupplierPurchase)
-                if start_date is not None:
-                    sp_q = sp_q.filter(SupplierPurchase.fecha_hora >= start_date)
-                if end_date is not None:
-                    sp_q = sp_q.filter(SupplierPurchase.fecha_hora <= end_date)
+                if type_filter in ("ALL", "GASTO"):
+                    exp_sum_q = session.query(
+                        func.count(GastosGenerales.id),
+                        func.coalesce(func.sum(GastosGenerales.monto), 0.0),
+                    )
+                    exp_sel = session.query(
+                        literal("GASTO").label("source_type"),
+                        GastosGenerales.id.label("source_id"),
+                        GastosGenerales.fecha_hora.label("ts"),
+                    )
+                    if start_date is not None:
+                        exp_sum_q = exp_sum_q.filter(GastosGenerales.fecha_hora >= start_date)
+                        exp_sel = exp_sel.filter(GastosGenerales.fecha_hora >= start_date)
+                    if end_date is not None:
+                        exp_sum_q = exp_sum_q.filter(GastosGenerales.fecha_hora <= end_date)
+                        exp_sel = exp_sel.filter(GastosGenerales.fecha_hora <= end_date)
+                    exp_cnt, exp_sum = exp_sum_q.first() or (0, 0.0)
+                    total_gastos_generales = round(float(exp_sum or 0.0), 2)
+                    subqueries.append((int(exp_cnt or 0), exp_sel))
 
-                for sp in sp_q.all():
-                    dt = sp.fecha_hora or datetime.now()
-                    sup_name = sp.supplier.name if sp.supplier else "Proveedor General"
-                    ref_txt = f" [Ref: {sp.invoice_reference}]" if sp.invoice_reference else ""
-                    desc = f"{sup_name} — {sp.descripcion}{ref_txt}"
-                    amount = round(float(sp.monto or 0.0), 2)
-                    total_pagos_proveedores += amount
+                total_records = sum(cnt for cnt, _ in subqueries)
+                total_pages = max(1, math.ceil(total_records / page_size))
+                current_page = min(requested_page, total_pages)
+                offset_val = (current_page - 1) * page_size
 
-                    unified_rows.append({
-                        "uid": f"SUP-{sp.id}",
-                        "source_id": sp.id,
-                        "source_type": "PROVEEDOR",
-                        "tipo": "Pago Proveedor",
-                        "timestamp": dt,
-                        "fecha": dt.strftime("%Y-%m-%d"),
-                        "hora": dt.strftime("%H:%M:%S"),
-                        "descripcion": desc,
-                        "monto": amount,
-                        "is_income": False,
-                    })
+                paginated_rows: List[Dict[str, Any]] = []
+                if subqueries and total_records > 0:
+                    combined = union_all(*(sq for _, sq in subqueries)).subquery()
+                    order_col = combined.c.ts.desc() if descending else combined.c.ts.asc()
+                    # Consulta SQLite con LIMIT 50 OFFSET X
+                    page_keys = (
+                        session.query(combined.c.source_type, combined.c.source_id)
+                        .order_by(order_col, combined.c.source_id.desc())
+                        .limit(page_size)
+                        .offset(offset_val)
+                        .all()
+                    )
 
-            # 3. Gastos Generales (Egresos fijos/variables)
-            if type_filter in ("ALL", "GASTO"):
-                exp_q = session.query(GastosGenerales)
-                if start_date is not None:
-                    exp_q = exp_q.filter(GastosGenerales.fecha_hora >= start_date)
-                if end_date is not None:
-                    exp_q = exp_q.filter(GastosGenerales.fecha_hora <= end_date)
+                    inv_ids = [sid for st, sid in page_keys if st == "VENTA"]
+                    sp_ids = [sid for st, sid in page_keys if st == "PROVEEDOR"]
+                    exp_ids = [sid for st, sid in page_keys if st == "GASTO"]
 
-                for g in exp_q.all():
-                    dt = g.fecha_hora or datetime.now()
-                    desc = f"[{g.categoria}] {g.descripcion}"
-                    amount = round(float(g.monto or 0.0), 2)
-                    total_gastos_generales += amount
+                    inv_map = (
+                        {
+                            inv.id: inv
+                            for inv in session.query(Invoice)
+                            .filter(Invoice.id.in_(inv_ids))
+                            .all()
+                        }
+                        if inv_ids
+                        else {}
+                    )
+                    sp_map = (
+                        {
+                            sp.id: sp
+                            for sp in session.query(SupplierPurchase)
+                            .filter(SupplierPurchase.id.in_(sp_ids))
+                            .all()
+                        }
+                        if sp_ids
+                        else {}
+                    )
+                    exp_map = (
+                        {
+                            g.id: g
+                            for g in session.query(GastosGenerales)
+                            .filter(GastosGenerales.id.in_(exp_ids))
+                            .all()
+                        }
+                        if exp_ids
+                        else {}
+                    )
 
-                    unified_rows.append({
-                        "uid": f"EXP-{g.id}",
-                        "source_id": g.id,
-                        "source_type": "GASTO",
-                        "tipo": "Gasto General",
-                        "timestamp": dt,
-                        "fecha": dt.strftime("%Y-%m-%d"),
-                        "hora": dt.strftime("%H:%M:%S"),
-                        "descripcion": desc,
-                        "monto": amount,
-                        "is_income": False,
-                    })
+                    for st, sid in page_keys:
+                        if st == "VENTA" and sid in inv_map:
+                            inv = inv_map[sid]
+                            dt = inv.created_at or datetime.now()
+                            customer_name = inv.customer.name if inv.customer else "Consumidor Final"
+                            items_qty = sum(i.quantity for i in inv.items)
+                            pay_badge = "Crédito" if inv.payment_type == "CREDIT" else "Contado"
+                            desc = f"Factura #{inv.invoice_number} — {customer_name} ({items_qty} uds, {pay_badge})"
+                            amount = round(float(inv.total or 0.0), 2)
+                            paginated_rows.append({
+                                "uid": f"INV-{inv.id}",
+                                "source_id": inv.id,
+                                "source_type": "VENTA",
+                                "tipo": "Venta",
+                                "timestamp": dt,
+                                "fecha": dt.strftime("%Y-%m-%d"),
+                                "hora": dt.strftime("%H:%M:%S"),
+                                "descripcion": desc,
+                                "monto": amount,
+                                "is_income": True,
+                            })
+                        elif st == "PROVEEDOR" and sid in sp_map:
+                            sp = sp_map[sid]
+                            dt = sp.fecha_hora or datetime.now()
+                            sup_name = sp.supplier.name if sp.supplier else "Proveedor General"
+                            ref_txt = f" [Ref: {sp.invoice_reference}]" if sp.invoice_reference else ""
+                            desc = f"{sup_name} — {sp.descripcion}{ref_txt}"
+                            amount = round(float(sp.monto or 0.0), 2)
+                            paginated_rows.append({
+                                "uid": f"SUP-{sp.id}",
+                                "source_id": sp.id,
+                                "source_type": "PROVEEDOR",
+                                "tipo": "Pago Proveedor",
+                                "timestamp": dt,
+                                "fecha": dt.strftime("%Y-%m-%d"),
+                                "hora": dt.strftime("%H:%M:%S"),
+                                "descripcion": desc,
+                                "monto": amount,
+                                "is_income": False,
+                            })
+                        elif st == "GASTO" and sid in exp_map:
+                            g = exp_map[sid]
+                            dt = g.fecha_hora or datetime.now()
+                            desc = f"[{g.categoria}] {g.descripcion}"
+                            amount = round(float(g.monto or 0.0), 2)
+                            paginated_rows.append({
+                                "uid": f"EXP-{g.id}",
+                                "source_id": g.id,
+                                "source_type": "GASTO",
+                                "tipo": "Gasto General",
+                                "timestamp": dt,
+                                "fecha": dt.strftime("%Y-%m-%d"),
+                                "hora": dt.strftime("%H:%M:%S"),
+                                "descripcion": desc,
+                                "monto": amount,
+                                "is_income": False,
+                            })
+            else:
+                unified_rows: List[Dict[str, Any]] = []
+                if type_filter in ("ALL", "VENTA"):
+                    inv_q = session.query(Invoice).filter(Invoice.payment_status != "CANCELLED")
+                    if start_date is not None:
+                        inv_q = inv_q.filter(Invoice.created_at >= start_date)
+                    if end_date is not None:
+                        inv_q = inv_q.filter(Invoice.created_at <= end_date)
 
-        # Filtro de búsqueda por texto en descripción, tipo o fecha
-        if search_query and search_query.strip():
-            term = search_query.strip().lower()
-            unified_rows = [
-                r for r in unified_rows
-                if term in r["descripcion"].lower()
-                or term in r["tipo"].lower()
-                or term in r["fecha"].lower()
-            ]
-            # Recalcular subtotales sobre los resultados filtrados por búsqueda
-            total_ingresos = sum(r["monto"] for r in unified_rows if r["source_type"] == "VENTA")
-            total_pagos_proveedores = sum(r["monto"] for r in unified_rows if r["source_type"] == "PROVEEDOR")
-            total_gastos_generales = sum(r["monto"] for r in unified_rows if r["source_type"] == "GASTO")
+                    for inv in inv_q.all():
+                        dt = inv.created_at or datetime.now()
+                        customer_name = inv.customer.name if inv.customer else "Consumidor Final"
+                        items_qty = sum(i.quantity for i in inv.items)
+                        pay_badge = "Crédito" if inv.payment_type == "CREDIT" else "Contado"
+                        desc = f"Factura #{inv.invoice_number} — {customer_name} ({items_qty} uds, {pay_badge})"
+                        amount = round(float(inv.total or 0.0), 2)
+                        unified_rows.append({
+                            "uid": f"INV-{inv.id}",
+                            "source_id": inv.id,
+                            "source_type": "VENTA",
+                            "tipo": "Venta",
+                            "timestamp": dt,
+                            "fecha": dt.strftime("%Y-%m-%d"),
+                            "hora": dt.strftime("%H:%M:%S"),
+                            "descripcion": desc,
+                            "monto": amount,
+                            "is_income": True,
+                        })
 
-        # Ordenamiento cronológico exacto por Fecha y Hora (DateTime)
-        unified_rows.sort(key=lambda r: r["timestamp"], reverse=descending)
+                if type_filter in ("ALL", "PROVEEDOR"):
+                    sp_q = session.query(SupplierPurchase)
+                    if start_date is not None:
+                        sp_q = sp_q.filter(SupplierPurchase.fecha_hora >= start_date)
+                    if end_date is not None:
+                        sp_q = sp_q.filter(SupplierPurchase.fecha_hora <= end_date)
+
+                    for sp in sp_q.all():
+                        dt = sp.fecha_hora or datetime.now()
+                        sup_name = sp.supplier.name if sp.supplier else "Proveedor General"
+                        ref_txt = f" [Ref: {sp.invoice_reference}]" if sp.invoice_reference else ""
+                        desc = f"{sup_name} — {sp.descripcion}{ref_txt}"
+                        amount = round(float(sp.monto or 0.0), 2)
+                        unified_rows.append({
+                            "uid": f"SUP-{sp.id}",
+                            "source_id": sp.id,
+                            "source_type": "PROVEEDOR",
+                            "tipo": "Pago Proveedor",
+                            "timestamp": dt,
+                            "fecha": dt.strftime("%Y-%m-%d"),
+                            "hora": dt.strftime("%H:%M:%S"),
+                            "descripcion": desc,
+                            "monto": amount,
+                            "is_income": False,
+                        })
+
+                if type_filter in ("ALL", "GASTO"):
+                    exp_q = session.query(GastosGenerales)
+                    if start_date is not None:
+                        exp_q = exp_q.filter(GastosGenerales.fecha_hora >= start_date)
+                    if end_date is not None:
+                        exp_q = exp_q.filter(GastosGenerales.fecha_hora <= end_date)
+
+                    for g in exp_q.all():
+                        dt = g.fecha_hora or datetime.now()
+                        desc = f"[{g.categoria}] {g.descripcion}"
+                        amount = round(float(g.monto or 0.0), 2)
+                        unified_rows.append({
+                            "uid": f"EXP-{g.id}",
+                            "source_id": g.id,
+                            "source_type": "GASTO",
+                            "tipo": "Gasto General",
+                            "timestamp": dt,
+                            "fecha": dt.strftime("%Y-%m-%d"),
+                            "hora": dt.strftime("%H:%M:%S"),
+                            "descripcion": desc,
+                            "monto": amount,
+                            "is_income": False,
+                        })
+
+                term = search_query.strip().lower()
+                unified_rows = [
+                    r for r in unified_rows
+                    if term in r["descripcion"].lower()
+                    or term in r["tipo"].lower()
+                    or term in r["fecha"].lower()
+                ]
+                total_ingresos = sum(r["monto"] for r in unified_rows if r["source_type"] == "VENTA")
+                total_pagos_proveedores = sum(r["monto"] for r in unified_rows if r["source_type"] == "PROVEEDOR")
+                total_gastos_generales = sum(r["monto"] for r in unified_rows if r["source_type"] == "GASTO")
+                unified_rows.sort(key=lambda r: r["timestamp"], reverse=descending)
+
+                total_records = len(unified_rows)
+                total_pages = max(1, math.ceil(total_records / page_size))
+                current_page = min(requested_page, total_pages)
+                offset_val = (current_page - 1) * page_size
+                paginated_rows = unified_rows[offset_val : offset_val + page_size]
 
         total_egresos = total_pagos_proveedores + total_gastos_generales
         balance_neto = total_ingresos - total_egresos
 
         return {
             "period_label": period_label,
-            "transactions": unified_rows,
-            "count": len(unified_rows),
+            "transactions": paginated_rows,
+            "count": total_records,
+            "total_records": total_records,
+            "page": current_page,
+            "page_size": page_size,
+            "total_pages": total_pages,
+            "offset": offset_val,
             "total_ingresos": round(total_ingresos, 2),
             "total_pagos_proveedores": round(total_pagos_proveedores, 2),
             "total_gastos_generales": round(total_gastos_generales, 2),
@@ -515,6 +740,83 @@ class DashboardController:
             raw_desc = (invoice.credit_notes or "").strip()
             data["description_display"] = raw_desc if raw_desc else "Venta registrada en Punto de Venta (POS)"
             return data
+
+    def reverse_sale_invoice(self, invoice_id: int, motivo: str) -> Tuple[bool, str]:
+        """
+        Reversa una venta, registra la auditoría inmutable (Loss Prevention) y restaura el stock
+        en una única transacción atómica segura de base de datos:
+        1. Valida que el motivo de anulación tenga al menos 5 caracteres.
+        2. Lee los datos de la factura original ANTES de ejecutar el delete().
+        3. Crea el registro en `RegistroAnulaciones` con fecha_anulacion, factura_id_original, monto_total y motivo.
+        4. Itera sobre los InvoiceItems, suma de vuelta la cantidad al Producto en inventario (product.stock += item.quantity).
+        5. Elimina los items y la factura original y ejecuta un único session.commit().
+        """
+        clean_motivo = (motivo or "").strip()
+        if len(clean_motivo) < 5:
+            return (
+                False,
+                "El motivo de la anulación es obligatorio y debe contener al menos 5 caracteres.",
+            )
+
+        with get_db_session() as session:
+            invoice = (
+                session.query(Invoice)
+                .options(joinedload(Invoice.items))
+                .filter(Invoice.id == invoice_id)
+                .first()
+            )
+            if not invoice:
+                return False, "La factura de venta seleccionada no fue encontrada."
+
+            # 1. Leer los datos de la factura que se va a anular ANTES de eliminarla
+            invoice_num = str(invoice.invoice_number or invoice.id)
+            original_id_str = f"{invoice_num} (ID: {invoice.id})"
+            original_total = round(float(invoice.total or 0.0), 2)
+
+            # 2. Crear registro inmutable de auditoría en RegistroAnulaciones
+            audit_entry = RegistroAnulaciones(
+                factura_id_original=original_id_str,
+                monto_total=original_total,
+                fecha_anulacion=datetime.now(),
+                motivo=clean_motivo,
+            )
+            session.add(audit_entry)
+
+            # 3. Restaurar stock en inventario y eliminar los items de la factura
+            restored_units = 0
+            for item in list(invoice.items):
+                qty = int(item.quantity or 0)
+                product = None
+                if item.product_id:
+                    product = session.query(Product).filter(Product.id == item.product_id).first()
+                if product is None and item.barcode:
+                    product = session.query(Product).filter(Product.barcode == item.barcode).first()
+
+                if product is not None and qty > 0:
+                    product.stock = int(product.stock or 0) + qty
+                    restored_units += qty
+
+                session.delete(item)
+
+            # 4. Eliminar la factura original y confirmar toda la transacción en bloque
+            session.delete(invoice)
+            session.commit()
+
+        self.notify_filter_change()
+        return (
+            True,
+            f"Factura #{invoice_num} anulada y auditada. Se restauraron {restored_units} unidades al inventario.",
+        )
+
+    def get_cancellation_audit_logs(self) -> List[Dict[str, Any]]:
+        """Retorna el historial inmutable de anulaciones de ventas ordenado del más reciente al más antiguo."""
+        with get_db_session() as session:
+            logs = (
+                session.query(RegistroAnulaciones)
+                .order_by(RegistroAnulaciones.fecha_anulacion.desc(), RegistroAnulaciones.id.desc())
+                .all()
+            )
+            return [log.to_dict() for log in logs]
 
     # ================= REGISTRO DE GASTOS GENERALES Y PAGOS A PROVEEDORES =================
 

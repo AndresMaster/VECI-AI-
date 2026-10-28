@@ -25,8 +25,8 @@ class Product(Base):
     # Stock y Alertas
     stock: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     min_stock: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
-    category: Mapped[Optional[str]] = mapped_column(String(100), default="General")
-    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    category: Mapped[Optional[str]] = mapped_column(String(100), default="General", index=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
@@ -34,7 +34,23 @@ class Product(Base):
     # Relación con items de factura
     invoice_items = relationship("InvoiceItem", back_populates="product", lazy="select")
 
-    # ================= CÁLCULOS AUTOMÁTICOS (PROPERTIES) =================
+    # ================= ALIASES EN ESPAÑOL Y CÁLCULOS AUTOMÁTICOS =================
+
+    @property
+    def codigo_barras(self) -> str:
+        return self.barcode
+
+    @codigo_barras.setter
+    def codigo_barras(self, value: str) -> None:
+        self.barcode = value
+
+    @property
+    def nombre(self) -> str:
+        return self.name
+
+    @nombre.setter
+    def nombre(self, value: str) -> None:
+        self.name = value
 
     @property
     def unit_profit(self) -> float:

@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Callable
 import flet as ft
 
 from config import PastelTheme
@@ -16,16 +16,27 @@ class CashFlowView(ft.Container):
       2. Pagos a proveedores (Egresos de inventario - Color Rojo).
       3. Gastos generales (Egresos fijos/variables como servicios públicos, nómina, varios - Color Rojo).
     - Reacciona en tiempo real al Filtro Temporal Avanzado (estilo YouTube Studio / Google Calendar).
-    - Permite registrar nuevos Gastos Generales y Pagos a Proveedores.
+    - Permite registrar nuevos Gastos Generales, Pagos a Proveedores y Reversar Ventas restaurando stock.
     """
 
-    def __init__(self, dashboard_controller: DashboardController):
+    def __init__(
+        self,
+        dashboard_controller: DashboardController,
+        on_sale_reversed: Optional[Callable[[], None]] = None,
+    ):
         super().__init__(expand=True)
         self.controller = dashboard_controller
+        self.on_sale_reversed = on_sale_reversed
         self.padding = 24
 
         self.type_filter: str = "ALL"
         self.sort_descending: bool = True
+
+        # Estado de Paginación Server-Side / SQLite (LIMIT 50 OFFSET X)
+        self.current_page: int = 1
+        self.page_size: int = 50
+        self.total_pages: int = 1
+        self.total_records: int = 0
 
         # Barra de Filtrado Temporal Avanzado sincronizada con el Dashboard
         self.date_filter_bar = DateRangeFilterBar(
@@ -43,7 +54,7 @@ class CashFlowView(ft.Container):
             border_color=PastelTheme.BORDER_LIGHT,
             dense=True,
             expand=True,
-            on_change=lambda _: self.load_transactions(),
+            on_change=self._on_search_change,
         )
 
         self.type_dropdown = ft.Dropdown(
@@ -204,6 +215,19 @@ class CashFlowView(ft.Container):
                                     ),
                                     on_click=lambda _: self.show_create_supplier_payment_modal(),
                                 ),
+                                ft.OutlinedButton(
+                                    content=ft.Row([
+                                        ft.Icon(ft.Icons.SHIELD_ROUNDED, size=18, color=PastelTheme.ACCENT_AMBER),
+                                        ft.Text("Auditoría Anulaciones", color=PastelTheme.TEXT_PRIMARY),
+                                    ]),
+                                    style=ft.ButtonStyle(
+                                        side=ft.BorderSide(1, PastelTheme.ACCENT_AMBER),
+                                        shape=ft.RoundedRectangleBorder(radius=PastelTheme.BORDER_RADIUS_BUTTON),
+                                        padding=ft.Padding.symmetric(horizontal=14, vertical=12),
+                                    ),
+                                    tooltip="Ver el registro inmutable de ventas anuladas / reversadas (Loss Prevention)",
+                                    on_click=lambda _: self.show_audit_logs_modal(),
+                                ),
                             ],
                         ),
                     ],
@@ -230,19 +254,26 @@ class CashFlowView(ft.Container):
                     ),
                 ),
 
-                # Tarjeta con la Tabla de Datos Unificada
+                # Tarjeta con la Tabla de Datos Unificada y Paginación (50 por página)
                 create_card(
                     expand=True,
                     padding=12,
                     content=ft.Column(
                         expand=True,
-                        scroll=ft.ScrollMode.AUTO,
+                        spacing=8,
                         controls=[
-                            ft.Row(
-                                controls=[self.data_table],
+                            ft.Column(
+                                expand=True,
                                 scroll=ft.ScrollMode.AUTO,
+                                controls=[
+                                    ft.Row(
+                                        controls=[self.data_table],
+                                        scroll=ft.ScrollMode.AUTO,
+                                    ),
+                                    self.empty_state_container,
+                                ],
                             ),
-                            self.empty_state_container,
+                            self._build_pagination_bar(),
                         ],
                     ),
                 ),
@@ -251,31 +282,116 @@ class CashFlowView(ft.Container):
 
         self.load_transactions()
 
+    def _build_pagination_bar(self) -> ft.Container:
+        """Construye los controles inferiores de paginación ('Anterior' | 'Página X de Y' | 'Siguiente')."""
+        self.prev_page_btn = ft.OutlinedButton(
+            content=ft.Row(
+                spacing=4,
+                tight=True,
+                controls=[
+                    ft.Icon(ft.Icons.CHEVRON_LEFT_ROUNDED, size=18),
+                    ft.Text("Anterior", size=12, weight=ft.FontWeight.W_600),
+                ],
+            ),
+            disabled=True,
+            style=ft.ButtonStyle(
+                shape=ft.RoundedRectangleBorder(radius=8),
+                padding=ft.Padding.symmetric(horizontal=12, vertical=8),
+            ),
+            on_click=self._on_prev_page,
+        )
+        self.page_indicator_text = ft.Text(
+            "Página 1 de 1",
+            size=13,
+            weight=ft.FontWeight.BOLD,
+            color=PastelTheme.TEXT_PRIMARY,
+        )
+        self.records_range_text = ft.Text(
+            "0 transacciones",
+            size=12,
+            color=PastelTheme.TEXT_SECONDARY,
+        )
+        self.next_page_btn = ft.OutlinedButton(
+            content=ft.Row(
+                spacing=4,
+                tight=True,
+                controls=[
+                    ft.Text("Siguiente", size=12, weight=ft.FontWeight.W_600),
+                    ft.Icon(ft.Icons.CHEVRON_RIGHT_ROUNDED, size=18),
+                ],
+            ),
+            disabled=True,
+            style=ft.ButtonStyle(
+                shape=ft.RoundedRectangleBorder(radius=8),
+                padding=ft.Padding.symmetric(horizontal=12, vertical=8),
+            ),
+            on_click=self._on_next_page,
+        )
+        return ft.Container(
+            bgcolor=PastelTheme.SURFACE_VARIANT,
+            padding=ft.Padding.symmetric(horizontal=16, vertical=8),
+            border_radius=8,
+            content=ft.Row(
+                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                controls=[
+                    self.records_range_text,
+                    ft.Row(
+                        spacing=12,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        controls=[
+                            self.prev_page_btn,
+                            self.page_indicator_text,
+                            self.next_page_btn,
+                        ],
+                    ),
+                ],
+            ),
+        )
+
+    def _on_search_change(self, _=None) -> None:
+        self.current_page = 1
+        self.load_transactions()
+
+    def _on_prev_page(self, _=None) -> None:
+        if self.current_page > 1:
+            self.current_page -= 1
+            self.load_transactions()
+
+    def _on_next_page(self, _=None) -> None:
+        if self.current_page < self.total_pages:
+            self.current_page += 1
+            self.load_transactions()
+
     def _on_date_range_changed(
         self,
         _start_date: Optional[datetime],
         _end_date: Optional[datetime],
         _label: str,
     ) -> None:
+        self.current_page = 1
         self.load_transactions()
 
     def _on_external_filter_sync(self) -> None:
         self.date_filter_bar.sync_from_controller()
+        self.current_page = 1
         self.load_transactions()
 
     def _on_type_filter_change(self, e) -> None:
         self.type_filter = self.type_dropdown.value or "ALL"
+        self.current_page = 1
         self.load_transactions()
 
     def _toggle_sort_direction(self, _=None) -> None:
         self.sort_descending = not self.sort_descending
         self.sort_btn_text.value = "Más recientes" if self.sort_descending else "Más antiguos"
+        self.current_page = 1
         self.load_transactions()
 
     def load_transactions(self) -> None:
         """
-        Consulta el Libro Mayor consolidado para el rango temporal activo y renderiza
-        la tabla de datos y los totales de flujo de caja.
+        Consulta el Libro Mayor consolidado para el rango temporal activo con paginación
+        SQLite (LIMIT 50 OFFSET X) y renderiza solo 50 registros por página.
         """
         self.date_filter_bar.sync_from_controller()
         start_dt, end_dt, _ = self.controller.get_active_date_range()
@@ -287,7 +403,24 @@ class CashFlowView(ft.Container):
             type_filter=self.type_filter,
             search_query=query_text,
             descending=self.sort_descending,
+            page=self.current_page,
+            page_size=self.page_size,
         )
+
+        self.current_page = ledger["page"]
+        self.total_pages = ledger["total_pages"]
+        self.total_records = ledger["total_records"]
+        offset_val = ledger["offset"]
+        page_txs = ledger["transactions"]
+
+        start_idx = (offset_val + 1) if self.total_records > 0 else 0
+        end_idx = min(offset_val + len(page_txs), self.total_records)
+        self.page_indicator_text.value = f"Página {self.current_page} de {self.total_pages}"
+        self.records_range_text.value = (
+            f"Mostrando {start_idx}–{end_idx} de {self.total_records:,} transacciones (50 por página)"
+        )
+        self.prev_page_btn.disabled = (self.current_page <= 1)
+        self.next_page_btn.disabled = (self.current_page >= self.total_pages)
 
         # 1. Actualizar KPIs de Flujo de Caja del Periodo
         ingresos = ledger["total_ingresos"]
@@ -373,7 +506,7 @@ class CashFlowView(ft.Container):
                 color=amount_color,
             )
 
-            # Acción: eliminar gasto/pago o ver detalle profundo de los productos llevados en la factura
+            # Acción: eliminar gasto/pago o ver detalle + reversar venta restaurando stock
             if source_type in ("GASTO", "PROVEEDOR"):
                 action_ctrl = ft.IconButton(
                     icon=ft.Icons.DELETE_OUTLINE_ROUNDED,
@@ -383,23 +516,39 @@ class CashFlowView(ft.Container):
                     on_click=lambda _, st=source_type, sid=source_id: self._delete_outflow_record(st, sid),
                 )
             else:
-                action_ctrl = ft.OutlinedButton(
-                    content=ft.Row(
-                        spacing=5,
-                        tight=True,
-                        controls=[
-                            ft.Icon(ft.Icons.VISIBILITY_ROUNDED, size=15, color=PastelTheme.PRIMARY),
-                            ft.Text("Ver Detalle", size=11, weight=ft.FontWeight.W_600, color=PastelTheme.PRIMARY),
-                        ],
-                    ),
-                    style=ft.ButtonStyle(
-                        bgcolor=PastelTheme.PRIMARY_PASTEL,
-                        side=ft.BorderSide(1, PastelTheme.PRIMARY),
-                        shape=ft.RoundedRectangleBorder(radius=8),
-                        padding=ft.Padding.symmetric(horizontal=10, vertical=6),
-                    ),
-                    tooltip="Ver qué productos se llevaron en esta factura",
-                    on_click=lambda _, sid=source_id: self._show_invoice_detail_modal(sid),
+                action_ctrl = ft.Row(
+                    spacing=6,
+                    tight=True,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    controls=[
+                        ft.OutlinedButton(
+                            content=ft.Row(
+                                spacing=5,
+                                tight=True,
+                                controls=[
+                                    ft.Icon(ft.Icons.VISIBILITY_ROUNDED, size=15, color=PastelTheme.PRIMARY),
+                                    ft.Text("Ver Detalle", size=11, weight=ft.FontWeight.W_600, color=PastelTheme.PRIMARY),
+                                ],
+                            ),
+                            style=ft.ButtonStyle(
+                                bgcolor=PastelTheme.PRIMARY_PASTEL,
+                                side=ft.BorderSide(1, PastelTheme.PRIMARY),
+                                shape=ft.RoundedRectangleBorder(radius=8),
+                                padding=ft.Padding.symmetric(horizontal=10, vertical=6),
+                            ),
+                            tooltip="Ver qué productos se llevaron en esta factura",
+                            on_click=lambda _, sid=source_id: self._show_invoice_detail_modal(sid),
+                        ),
+                        ft.IconButton(
+                            icon=ft.Icons.DELETE_OUTLINE_ROUNDED,
+                            icon_size=18,
+                            icon_color=PastelTheme.ACCENT_CORAL,
+                            tooltip="Eliminar / Reversar venta y restaurar stock en inventario",
+                            on_click=lambda _, sid=source_id, desc=tx["descripcion"], amt=tx["monto"]: (
+                                self._confirm_reverse_sale_modal(sid, desc, amt)
+                            ),
+                        ),
+                    ],
                 )
 
             rows.append(
@@ -447,6 +596,297 @@ class CashFlowView(ft.Container):
         elif source_type == "PROVEEDOR":
             self.controller.delete_supplier_purchase(source_id)
         self.load_transactions()
+
+    def _confirm_reverse_sale_modal(self, invoice_id: int, description: str, amount: float) -> None:
+        """
+        Muestra un Diálogo de Confirmación con control de Prevención de Pérdidas (Loss Prevention)
+        antes de eliminar/reversar una factura de venta:
+        - Exige el campo obligatorio "Motivo de la anulación" (mínimo 5 caracteres).
+        - Mantiene bloqueado el botón "Confirmar Eliminación" o muestra error si el motivo es inválido.
+        - Registra la anulación en `RegistroAnulaciones` y restaura el stock en una sola transacción.
+        """
+        motivo_validation_text = ft.Text(
+            "⚠ Obligatorio: ingrese el motivo de la anulación (mínimo 5 caracteres).",
+            size=11,
+            weight=ft.FontWeight.W_600,
+            color=PastelTheme.ACCENT_CORAL,
+        )
+
+        confirm_btn = ft.FilledButton(
+            content=ft.Row(
+                spacing=6,
+                tight=True,
+                controls=[
+                    ft.Icon(ft.Icons.DELETE_FOREVER_ROUNDED, size=18),
+                    ft.Text("Confirmar Eliminación", weight=ft.FontWeight.BOLD),
+                ],
+            ),
+            disabled=True,
+            style=ft.ButtonStyle(
+                bgcolor={
+                    ft.ControlState.DEFAULT: PastelTheme.ACCENT_CORAL,
+                    ft.ControlState.DISABLED: PastelTheme.BORDER_LIGHT,
+                },
+                color={
+                    ft.ControlState.DEFAULT: PastelTheme.TEXT_ON_PRIMARY,
+                    ft.ControlState.DISABLED: PastelTheme.TEXT_MUTED,
+                },
+                shape=ft.RoundedRectangleBorder(radius=PastelTheme.BORDER_RADIUS_BUTTON),
+            ),
+        )
+
+        def _on_motivo_change(e) -> None:
+            raw_motivo = (e.control.value or "").strip()
+            if len(raw_motivo) >= 5:
+                confirm_btn.disabled = False
+                motivo_validation_text.value = "✓ Motivo válido para registro en auditoría inmutable."
+                motivo_validation_text.color = PastelTheme.ACCENT_MINT
+            else:
+                confirm_btn.disabled = True
+                faltan = 5 - len(raw_motivo)
+                motivo_validation_text.value = (
+                    f"⚠ El motivo debe tener al menos 5 caracteres (faltan {faltan})."
+                )
+                motivo_validation_text.color = PastelTheme.ACCENT_CORAL
+            safe_update(confirm_btn)
+            safe_update(motivo_validation_text)
+
+        motivo_input = ft.TextField(
+            label="Motivo de la anulación",
+            hint_text='Ej: "Cliente devolvió el producto", "Error de digitación"...',
+            prefix_icon=ft.Icons.POLICY_ROUNDED,
+            multiline=True,
+            min_lines=2,
+            max_lines=3,
+            border_radius=PastelTheme.BORDER_RADIUS_INPUT,
+            bgcolor=PastelTheme.SURFACE_WHITE,
+            border_color=PastelTheme.ACCENT_CORAL,
+            focused_border_color=PastelTheme.PRIMARY,
+            dense=True,
+            autofocus=True,
+            on_change=_on_motivo_change,
+        )
+
+        def _execute_reversal(_=None):
+            clean_motivo = (motivo_input.value or "").strip()
+            if len(clean_motivo) < 5:
+                motivo_validation_text.value = (
+                    "⚠ Error: Debe escribir un motivo de al menos 5 caracteres para confirmar la eliminación."
+                )
+                motivo_validation_text.color = PastelTheme.ACCENT_CORAL
+                confirm_btn.disabled = True
+                safe_update(motivo_validation_text)
+                safe_update(confirm_btn)
+                return
+
+            self.page.pop_dialog()
+            success, msg = self.controller.reverse_sale_invoice(invoice_id, clean_motivo)
+            self.load_transactions()
+            if self.on_sale_reversed is not None:
+                try:
+                    self.on_sale_reversed()
+                except Exception as cb_err:
+                    print(f"[CashFlowView] Error en callback on_sale_reversed: {cb_err}")
+
+            feedback_dialog = ft.AlertDialog(
+                title=ft.Row(
+                    spacing=8,
+                    controls=[
+                        ft.Icon(
+                            ft.Icons.CHECK_CIRCLE_ROUNDED if success else ft.Icons.ERROR_OUTLINE_ROUNDED,
+                            color=PastelTheme.ACCENT_MINT if success else PastelTheme.ACCENT_CORAL,
+                            size=24,
+                        ),
+                        ft.Text(
+                            "Venta Anulada, Auditada y Stock Restaurado" if success else "Error al Reversar Venta",
+                            size=16,
+                            weight=ft.FontWeight.BOLD,
+                        ),
+                    ],
+                ),
+                content=ft.Text(msg, size=13, color=PastelTheme.TEXT_PRIMARY),
+                actions=[
+                    ft.FilledButton(
+                        "Aceptar",
+                        bgcolor=PastelTheme.PRIMARY,
+                        color=PastelTheme.TEXT_ON_PRIMARY,
+                        on_click=lambda _: self.page.pop_dialog(),
+                    )
+                ],
+            )
+            self.page.show_dialog(feedback_dialog)
+
+        confirm_btn.on_click = _execute_reversal
+
+        confirm_dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Row(
+                spacing=10,
+                controls=[
+                    ft.Container(
+                        bgcolor=PastelTheme.CORAL_PASTEL,
+                        padding=8,
+                        border_radius=10,
+                        content=ft.Icon(ft.Icons.RESTORE_ROUNDED, color=PastelTheme.ACCENT_CORAL, size=22),
+                    ),
+                    ft.Text(
+                        "Confirmar Eliminación / Reversión de Venta",
+                        size=17,
+                        weight=ft.FontWeight.BOLD,
+                        color=PastelTheme.TEXT_PRIMARY,
+                    ),
+                ],
+            ),
+            content=ft.Container(
+                width=460,
+                content=ft.Column(
+                    tight=True,
+                    spacing=10,
+                    controls=[
+                        ft.Text(
+                            "Esta acción reversará la venta, devolverá el stock al inventario y dejará un registro inmutable de auditoría.",
+                            size=13,
+                            color=PastelTheme.TEXT_PRIMARY,
+                        ),
+                        ft.Container(
+                            bgcolor=PastelTheme.SURFACE_VARIANT,
+                            border_radius=10,
+                            padding=12,
+                            border=ft.Border.all(1, PastelTheme.BORDER_LIGHT),
+                            content=ft.Column(
+                                spacing=4,
+                                tight=True,
+                                controls=[
+                                    ft.Text(description, size=12, weight=ft.FontWeight.BOLD, color=PastelTheme.TEXT_PRIMARY),
+                                    ft.Text(
+                                        f"Monto total a anular: ${amount:,.2f}",
+                                        size=12,
+                                        color=PastelTheme.ACCENT_CORAL,
+                                        weight=ft.FontWeight.W_600,
+                                    ),
+                                ],
+                            ),
+                        ),
+                        motivo_input,
+                        motivo_validation_text,
+                        ft.Container(
+                            bgcolor=PastelTheme.MINT_PASTEL,
+                            border_radius=8,
+                            padding=10,
+                            content=ft.Row(
+                                spacing=8,
+                                controls=[
+                                    ft.Icon(ft.Icons.INVENTORY_2_ROUNDED, size=18, color=PastelTheme.ACCENT_MINT),
+                                    ft.Text(
+                                        "Las unidades vendidas se sumarán de vuelta al Inventario y el motivo quedará guardado en RegistroAnulaciones.",
+                                        size=11,
+                                        color=PastelTheme.TEXT_PRIMARY,
+                                        expand=True,
+                                    ),
+                                ],
+                            ),
+                        ),
+                    ],
+                ),
+            ),
+            actions=[
+                ft.TextButton(
+                    "Cancelar",
+                    on_click=lambda _: self.page.pop_dialog(),
+                ),
+                confirm_btn,
+            ],
+        )
+        self.page.show_dialog(confirm_dialog)
+
+    def show_audit_logs_modal(self) -> None:
+        """Muestra el historial inmutable de facturas anuladas/reversadas (RegistroAnulaciones)."""
+        logs = self.controller.get_cancellation_audit_logs()
+        items_controls = []
+        for entry in logs:
+            items_controls.append(
+                ft.Container(
+                    bgcolor=PastelTheme.SURFACE_VARIANT,
+                    border_radius=10,
+                    padding=12,
+                    border=ft.Border.all(1, PastelTheme.BORDER_LIGHT),
+                    content=ft.Column(
+                        spacing=4,
+                        tight=True,
+                        controls=[
+                            ft.Row(
+                                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                                controls=[
+                                    ft.Text(
+                                        f"Factura: {entry['factura_id_original']}",
+                                        size=13,
+                                        weight=ft.FontWeight.BOLD,
+                                        color=PastelTheme.TEXT_PRIMARY,
+                                    ),
+                                    ft.Text(
+                                        f"${entry['monto_total']:,.2f}",
+                                        size=13,
+                                        weight=ft.FontWeight.BOLD,
+                                        color=PastelTheme.ACCENT_CORAL,
+                                    ),
+                                ],
+                            ),
+                            ft.Text(
+                                f"Fecha de anulación: {entry['fecha_anulacion']}",
+                                size=11,
+                                color=PastelTheme.TEXT_SECONDARY,
+                            ),
+                            ft.Text(
+                                f"Motivo: {entry['motivo']}",
+                                size=12,
+                                weight=ft.FontWeight.W_500,
+                                color=PastelTheme.TEXT_PRIMARY,
+                            ),
+                        ],
+                    ),
+                )
+            )
+
+        if not items_controls:
+            items_controls.append(
+                ft.Container(
+                    padding=24,
+                    alignment=ft.Alignment.CENTER,
+                    content=ft.Text(
+                        "No se han registrado anulaciones de facturas en este inquilino.",
+                        size=13,
+                        color=PastelTheme.TEXT_MUTED,
+                    ),
+                )
+            )
+
+        audit_dialog = ft.AlertDialog(
+            title=ft.Row(
+                spacing=8,
+                controls=[
+                    ft.Icon(ft.Icons.SHIELD_ROUNDED, color=PastelTheme.ACCENT_AMBER, size=24),
+                    ft.Text("Registro Inmutable de Anulaciones (AuditLog)", size=16, weight=ft.FontWeight.BOLD),
+                ],
+            ),
+            content=ft.Container(
+                width=520,
+                height=360,
+                content=ft.Column(
+                    spacing=8,
+                    scroll=ft.ScrollMode.AUTO,
+                    controls=items_controls,
+                ),
+            ),
+            actions=[
+                ft.FilledButton(
+                    "Cerrar",
+                    bgcolor=PastelTheme.PRIMARY,
+                    color=PastelTheme.TEXT_ON_PRIMARY,
+                    on_click=lambda _: self.page.pop_dialog(),
+                )
+            ],
+        )
+        self.page.show_dialog(audit_dialog)
 
     # ================= MODAL "DETALLE DE FACTURA" EN FLUJO DE CAJA =================
 

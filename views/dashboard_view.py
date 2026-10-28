@@ -33,12 +33,82 @@ class DashboardView(ft.Container):
         # Suscribir a cambios del filtro para mantener sincronización con Libro Mayor
         self.controller.subscribe_filter_change(self._on_external_filter_sync)
 
+        # Estado de Paginación para Alertas de Stock Bajo en Dashboard (LIMIT 50 OFFSET X)
+        self.low_stock_page: int = 1
+        self.low_stock_page_size: int = 50
+        self.low_stock_total_pages: int = 1
+
         # Contenedores dinámicos (organizados en 2 filas amplias para máxima legibilidad)
         self.kpi_row = ft.Row(spacing=16)
         self.kpi_inventory_row = ft.Row(spacing=16)
         self.bar_chart_img = ft.Image(src=b"", fit=ft.BoxFit.CONTAIN, expand=True)
         self.pie_chart_img = ft.Image(src=b"", fit=ft.BoxFit.CONTAIN, expand=True)
         self.alerts_column = ft.Column(spacing=8, scroll=ft.ScrollMode.AUTO)
+
+        self.ls_prev_btn = ft.OutlinedButton(
+            content=ft.Row(
+                spacing=4,
+                tight=True,
+                controls=[
+                    ft.Icon(ft.Icons.CHEVRON_LEFT_ROUNDED, size=18),
+                    ft.Text("Anterior", size=12, weight=ft.FontWeight.W_600),
+                ],
+            ),
+            disabled=True,
+            style=ft.ButtonStyle(
+                shape=ft.RoundedRectangleBorder(radius=8),
+                padding=ft.Padding.symmetric(horizontal=12, vertical=8),
+            ),
+            on_click=self._on_ls_prev_page,
+        )
+        self.ls_page_text = ft.Text(
+            "Página 1 de 1",
+            size=13,
+            weight=ft.FontWeight.BOLD,
+            color=PastelTheme.TEXT_PRIMARY,
+        )
+        self.ls_range_text = ft.Text(
+            "0 alertas",
+            size=12,
+            color=PastelTheme.TEXT_SECONDARY,
+        )
+        self.ls_next_btn = ft.OutlinedButton(
+            content=ft.Row(
+                spacing=4,
+                tight=True,
+                controls=[
+                    ft.Text("Siguiente", size=12, weight=ft.FontWeight.W_600),
+                    ft.Icon(ft.Icons.CHEVRON_RIGHT_ROUNDED, size=18),
+                ],
+            ),
+            disabled=True,
+            style=ft.ButtonStyle(
+                shape=ft.RoundedRectangleBorder(radius=8),
+                padding=ft.Padding.symmetric(horizontal=12, vertical=8),
+            ),
+            on_click=self._on_ls_next_page,
+        )
+        self.ls_pagination_bar = ft.Container(
+            bgcolor=PastelTheme.SURFACE_VARIANT,
+            padding=ft.Padding.symmetric(horizontal=14, vertical=8),
+            border_radius=8,
+            content=ft.Row(
+                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                controls=[
+                    self.ls_range_text,
+                    ft.Row(
+                        spacing=12,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        controls=[
+                            self.ls_prev_btn,
+                            self.ls_page_text,
+                            self.ls_next_btn,
+                        ],
+                    ),
+                ],
+            ),
+        )
 
         self.content = ft.Column(
             expand=True,
@@ -160,6 +230,7 @@ class DashboardView(ft.Container):
                             ),
                             ft.Divider(color=PastelTheme.BORDER_LIGHT, height=1),
                             self.alerts_column,
+                            self.ls_pagination_bar,
                         ],
                     ),
                     padding=20,
@@ -168,6 +239,16 @@ class DashboardView(ft.Container):
         )
 
         self.refresh_data()
+
+    def _on_ls_prev_page(self, _=None) -> None:
+        if self.low_stock_page > 1:
+            self.low_stock_page -= 1
+            self.refresh_data()
+
+    def _on_ls_next_page(self, _=None) -> None:
+        if self.low_stock_page < self.low_stock_total_pages:
+            self.low_stock_page += 1
+            self.refresh_data()
 
     def _on_date_range_changed(
         self,
@@ -188,13 +269,18 @@ class DashboardView(ft.Container):
     ) -> None:
         """
         Recalcula métricas para el rango (start_date, end_date), regenera gráficos
-        y actualiza los componentes visuales.
+        y actualiza los componentes visuales con paginación LIMIT 50 OFFSET X.
         """
         self.date_filter_bar.sync_from_controller()
         if start_date is None and end_date is None:
             start_date, end_date, _ = self.controller.get_active_date_range()
 
-        kpis = self.controller.get_kpis(start_date=start_date, end_date=end_date)
+        kpis = self.controller.get_kpis(
+            start_date=start_date,
+            end_date=end_date,
+            low_stock_page=self.low_stock_page,
+            low_stock_page_size=self.low_stock_page_size,
+        )
 
         real_profit = kpis["total_realized_profit"]
         profit_bg = PastelTheme.MINT_PASTEL if real_profit >= 0 else PastelTheme.CORAL_PASTEL
@@ -290,8 +376,21 @@ class DashboardView(ft.Container):
         )
         self.pie_chart_img.src = pie_bytes
 
-        # 3. Lista de Alertas de Stock Bajo
+        # 3. Lista de Alertas de Stock Bajo (Paginada 50 por página)
         low_stock_items = kpis["low_stock_items"]
+        self.low_stock_page = kpis.get("low_stock_page", 1)
+        self.low_stock_total_pages = kpis.get("low_stock_total_pages", 1)
+        ls_total = kpis.get("low_stock_count", 0)
+        ls_offset = kpis.get("low_stock_offset", 0)
+        ls_start = (ls_offset + 1) if ls_total > 0 else 0
+        ls_end = min(ls_offset + len(low_stock_items), ls_total)
+
+        self.ls_page_text.value = f"Página {self.low_stock_page} de {self.low_stock_total_pages}"
+        self.ls_range_text.value = (
+            f"Mostrando {ls_start}–{ls_end} de {ls_total:,} alertas (50 por página)"
+        )
+        self.ls_prev_btn.disabled = (self.low_stock_page <= 1)
+        self.ls_next_btn.disabled = (self.low_stock_page >= self.low_stock_total_pages)
         if not low_stock_items:
             self.alerts_column.controls = [
                 ft.Container(

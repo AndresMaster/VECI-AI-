@@ -33,7 +33,7 @@ DATABASE_URL = f"sqlite:///{DATABASE_PATH}"
 
 # App Config
 APP_TITLE = "VECI_AI"
-APP_VERSION = "1.0.2"
+APP_VERSION = "1.0.3"
 LOW_STOCK_THRESHOLD_DEFAULT = 5
 
 # Open Food Facts API Policy (Required Custom User-Agent)

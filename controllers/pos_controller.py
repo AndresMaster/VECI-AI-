@@ -1,8 +1,9 @@
 import json
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Dict, List, Optional, Callable, Any
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, case
 
 from database import get_db_session
 from models import Product, Customer, Invoice, InvoiceItem
@@ -18,6 +19,16 @@ class CartItem:
     quantity: int = 1
     max_stock: int = 0
     presentacion: str = ""
+    original_sale_price: float = 0.0
+
+    def __post_init__(self) -> None:
+        if self.original_sale_price <= 0:
+            self.original_sale_price = float(self.sale_price)
+
+    @property
+    def is_promo_price(self) -> bool:
+        """Indica si el precio unitario fue sobrescrito manualmente para esta venta."""
+        return abs(float(self.sale_price) - float(self.original_sale_price)) > 0.009
 
     @property
     def display_name(self) -> str:
@@ -39,41 +50,20 @@ class CartItem:
         return round(self.unit_profit * self.quantity, 2)
 
 
-class PosController:
+@dataclass
+class PosTabSession:
     """
-    Controlador de Punto de Venta (POS / Facturación).
-    Mantiene el estado persistente del borrador (draft) para no perder la venta
-    al navegar entre pestañas, y expone la API `create_invoice_from_ai`
-    para futuras integraciones de transcripción por voz.
+    Sesión independiente de facturación (Pestaña / Tab de venta paralela).
+    Mantiene su propio carrito, cliente asignado, modalidad de pago, notas y efectivo recibido.
     """
-    def __init__(self):
-        # Estado persistente del carrito
-        self.items: Dict[str, CartItem] = {} # Key: barcode
-        self.customer_id: Optional[int] = None
-        self.payment_type: str = "CASH" # 'CASH' o 'CREDIT'
-        self.credit_notes: str = ""
-        self.discount: float = 0.0
-
-        # Suscriptores para reactividad en la UI de Flet
-        self._change_listeners: List[Callable[[], None]] = []
-
-    def subscribe(self, listener: Callable[[], None]) -> None:
-        """Registra vistas que desean reaccionar cuando el borrador cambie."""
-        if listener not in self._change_listeners:
-            self._change_listeners.append(listener)
-
-    def unsubscribe(self, listener: Callable[[], None]) -> None:
-        if listener in self._change_listeners:
-            self._change_listeners.remove(listener)
-
-    def _notify_change(self) -> None:
-        for listener in self._change_listeners:
-            try:
-                listener()
-            except Exception as e:
-                print(f"[PosController] Error notificando listener: {e}")
-
-    # ================= CÁLCULOS DEL BORRADOR =================
+    tab_id: int
+    title: str
+    items: Dict[str, CartItem] = field(default_factory=dict)
+    customer_id: Optional[int] = None
+    payment_type: str = "CASH"
+    credit_notes: str = ""
+    discount: float = 0.0
+    cash_received_str: str = ""
 
     @property
     def subtotal(self) -> float:
@@ -91,6 +81,201 @@ class PosController:
     def total_estimated_profit(self) -> float:
         return round(sum(item.total_profit for item in self.items.values()), 2)
 
+
+class PosController:
+    """
+    Controlador de Punto de Venta (POS / Facturación).
+    Mantiene el estado persistente de múltiples pestañas/borradores (tabs) en paralelo
+    para no perder ninguna venta en curso al cambiar de cliente o navegar hacia Inventario,
+    y expone la API `create_invoice_from_ai` para futuras integraciones de voz.
+    """
+    def __init__(self):
+        # Suscriptores para reactividad en la UI de Flet
+        self._change_listeners: List[Callable[[], None]] = []
+
+        # Variable de estado para Prevención de Doble Escaneo (Scanner Cooldown de 1.0s)
+        self.ultimo_tiempo_escaneo: float = 0.0
+
+        # Sistema de Facturación Múltiple (Pestañas / Sesiones concurrentes)
+        self._next_tab_number: int = 1
+        self.tabs: List[PosTabSession] = []
+        self.active_tab_id: int = 0
+        self.create_new_tab(notify=False)
+
+    # ================= GESTIÓN DE PESTAÑAS (MÚLTIPLES VENTAS EN PARALELO) =================
+
+    @property
+    def active_tab(self) -> PosTabSession:
+        """Retorna la sesión/pestaña de venta actualmente activa."""
+        if not self.tabs:
+            self.create_new_tab(notify=False)
+        for tab in self.tabs:
+            if tab.tab_id == self.active_tab_id:
+                return tab
+        self.active_tab_id = self.tabs[0].tab_id
+        return self.tabs[0]
+
+    def create_new_tab(self, notify: bool = True) -> PosTabSession:
+        """Crea una nueva pestaña de venta en blanco (ej. Venta 1, Venta 2) y la activa."""
+        tab_num = self._next_tab_number
+        self._next_tab_number += 1
+        new_tab = PosTabSession(
+            tab_id=tab_num,
+            title=f"Venta {tab_num}",
+        )
+        self.tabs.append(new_tab)
+        self.active_tab_id = new_tab.tab_id
+        if notify:
+            self._notify_change()
+        return new_tab
+
+    def switch_tab(self, tab_id: int) -> bool:
+        """Cambia la pestaña activa conservando intacto el estado de las demás pestañas."""
+        for tab in self.tabs:
+            if tab.tab_id == tab_id:
+                self.active_tab_id = tab_id
+                self._notify_change()
+                return True
+        return False
+
+    def close_tab(self, tab_id: int) -> None:
+        """
+        Cierra una pestaña de venta. Si es la única pestaña abierta, limpia su borrador
+        para mantener siempre al menos una sesión activa disponible.
+        """
+        if len(self.tabs) <= 1:
+            self.clear_draft()
+            return
+
+        idx_to_remove = None
+        for idx, tab in enumerate(self.tabs):
+            if tab.tab_id == tab_id:
+                idx_to_remove = idx
+                break
+
+        if idx_to_remove is None:
+            return
+
+        was_active = (self.active_tab_id == tab_id)
+        self.tabs.pop(idx_to_remove)
+
+        if was_active and self.tabs:
+            new_idx = min(idx_to_remove, len(self.tabs) - 1)
+            self.active_tab_id = self.tabs[new_idx].tab_id
+
+        self._notify_change()
+
+    # ================= PROPIEDADES DELEGADAS A LA PESTAÑA ACTIVA =================
+
+    @property
+    def items(self) -> Dict[str, CartItem]:
+        return self.active_tab.items
+
+    @items.setter
+    def items(self, value: Dict[str, CartItem]) -> None:
+        self.active_tab.items = value
+
+    @property
+    def customer_id(self) -> Optional[int]:
+        return self.active_tab.customer_id
+
+    @customer_id.setter
+    def customer_id(self, value: Optional[int]) -> None:
+        self.active_tab.customer_id = value
+
+    @property
+    def payment_type(self) -> str:
+        return self.active_tab.payment_type
+
+    @payment_type.setter
+    def payment_type(self, value: str) -> None:
+        self.active_tab.payment_type = value
+
+    @property
+    def credit_notes(self) -> str:
+        return self.active_tab.credit_notes
+
+    @credit_notes.setter
+    def credit_notes(self, value: str) -> None:
+        self.active_tab.credit_notes = value
+
+    @property
+    def discount(self) -> float:
+        return self.active_tab.discount
+
+    @discount.setter
+    def discount(self, value: float) -> None:
+        self.active_tab.discount = value
+
+    @property
+    def cash_received_str(self) -> str:
+        return self.active_tab.cash_received_str
+
+    @cash_received_str.setter
+    def cash_received_str(self, value: str) -> None:
+        self.active_tab.cash_received_str = value
+
+    @staticmethod
+    def parse_currency_input(raw_str: str) -> float:
+        """Convierte cadenas numéricas de entrada en un valor flotante seguro."""
+        cleaned = (raw_str or "").strip().replace("$", "").replace(" ", "").replace(",", "")
+        if not cleaned:
+            return 0.0
+        try:
+            return max(0.0, float(cleaned))
+        except ValueError:
+            return 0.0
+
+    @property
+    def cash_received_amount(self) -> float:
+        return self.parse_currency_input(self.active_tab.cash_received_str)
+
+    @property
+    def change_due(self) -> float:
+        """Vueltas = Efectivo Recibido - Total Factura."""
+        return round(self.cash_received_amount - self.total, 2)
+
+    def set_cash_received(self, raw_value: str, notify: bool = False) -> tuple[float, float]:
+        """Actualiza el efectivo recibido en la pestaña activa y retorna (efectivo, vueltas)."""
+        self.active_tab.cash_received_str = raw_value or ""
+        if notify:
+            self._notify_change()
+        return self.cash_received_amount, self.change_due
+
+    def subscribe(self, listener: Callable[[], None]) -> None:
+        """Registra vistas que desean reaccionar cuando el borrador cambie."""
+        if listener not in self._change_listeners:
+            self._change_listeners.append(listener)
+
+    def unsubscribe(self, listener: Callable[[], None]) -> None:
+        if listener in self._change_listeners:
+            self._change_listeners.remove(listener)
+
+    def _notify_change(self) -> None:
+        for listener in self._change_listeners:
+            try:
+                listener()
+            except Exception as e:
+                print(f"[PosController] Error notificando listener: {e}")
+
+    # ================= CÁLCULOS DEL BORRADOR ACTIVO =================
+
+    @property
+    def subtotal(self) -> float:
+        return self.active_tab.subtotal
+
+    @property
+    def total(self) -> float:
+        return self.active_tab.total
+
+    @property
+    def total_items_count(self) -> int:
+        return self.active_tab.total_items_count
+
+    @property
+    def total_estimated_profit(self) -> float:
+        return self.active_tab.total_estimated_profit
+
     # ================= BÚSQUEDA PREDICTIVA (AUTOCOMPLETADO POR NOMBRE) =================
 
     def search_products_by_name(self, search_term: str, limit: int = 10) -> List[Dict[str, Any]]:
@@ -104,7 +289,7 @@ class PosController:
             return []
 
         like_pattern = f"%{term}%"
-        term_lower = term.lower()
+        prefix_pattern = f"{term}%"
         with get_db_session() as session:
             matches = (
                 session.query(Product)
@@ -116,22 +301,24 @@ class PosController:
                         Product.barcode.ilike(like_pattern),
                     ),
                 )
-                .order_by(Product.name.asc(), Product.presentacion.asc())
+                .order_by(
+                    case((Product.name.ilike(prefix_pattern), 0), else_=1),
+                    Product.name.asc(),
+                    Product.presentacion.asc(),
+                )
+                .limit(limit)
                 .all()
             )
-            # Priorizar productos cuyo nombre inicia con la letra/texto digitado
-            matches.sort(
-                key=lambda p: (
-                    0 if (p.name or "").lower().startswith(term_lower) else 1,
-                    (p.name or "").lower(),
-                    (p.presentacion or "").lower(),
-                )
-            )
-            return [p.to_dict() for p in matches[:limit]]
+            return [p.to_dict() for p in matches]
 
     # ================= GESTIÓN DEL CARRITO (BORRADOR) =================
 
-    def add_item_to_invoice(self, barcode_or_id: str | int, quantity: int = 1) -> tuple[bool, str]:
+    def add_item_to_invoice(
+        self,
+        barcode_or_id: str | int,
+        quantity: int = 1,
+        apply_cooldown: bool = True,
+    ) -> tuple[bool, str]:
         """
         Método unificado invocado tanto por el escáner de código de barras como por
         la selección en la barra de búsqueda predictiva por nombre.
@@ -142,14 +329,24 @@ class PosController:
                 if not prod:
                     return False, "Producto no encontrado. Regístrelo en el módulo de Inventario."
                 barcode_str = prod.barcode
-            return self.add_product_by_barcode(barcode_str, quantity=quantity)
-        return self.add_product_by_barcode(str(barcode_or_id), quantity=quantity)
+            return self.add_product_by_barcode(barcode_str, quantity=quantity, apply_cooldown=apply_cooldown)
+        return self.add_product_by_barcode(str(barcode_or_id), quantity=quantity, apply_cooldown=apply_cooldown)
 
-    def add_product_by_barcode(self, barcode: str, quantity: int = 1) -> tuple[bool, str]:
+    def add_product_by_barcode(
+        self,
+        barcode: str,
+        quantity: int = 1,
+        apply_cooldown: bool = True,
+    ) -> tuple[bool, str]:
         """
         Agrega un producto al borrador buscando por código de barras.
-        Valida disponibilidad de stock.
+        Incluye prevención de doble escaneo por rebote de hardware (Cooldown de 1.0 segundo)
+        y valida disponibilidad de stock.
         """
+        if apply_cooldown:
+            if time.time() - self.ultimo_tiempo_escaneo < 1.0:
+                return False, "Escaneo duplicado ignorado (bloqueo anti-rebote de 1s)."
+
         code = barcode.strip()
         with get_db_session() as session:
             product = session.query(Product).filter(
@@ -166,6 +363,7 @@ class PosController:
                 return False, f"Stock insuficiente para '{product.display_name}'. Disponible: {product.stock}"
 
             if code in self.items:
+                self.items[code].max_stock = product.stock
                 self.items[code].quantity += quantity
             else:
                 self.items[code] = CartItem(
@@ -175,15 +373,19 @@ class PosController:
                     presentacion=product.presentacion or "",
                     cost_price=product.cost_price,
                     sale_price=product.sale_price,
+                    original_sale_price=product.sale_price,
                     quantity=quantity,
                     max_stock=product.stock
                 )
 
+        if apply_cooldown:
+            self.ultimo_tiempo_escaneo = time.time()
+
         self._notify_change()
         return True, f"Agregado: {self.items[code].display_name}"
 
-    def update_quantity(self, barcode: str, quantity: int) -> tuple[bool, str]:
-        """Modifica la cantidad de un producto ya presente en el borrador."""
+    def update_quantity(self, barcode: str, quantity: int, notify: bool = True) -> tuple[bool, str]:
+        """Modifica la cantidad de un producto ya presente en el borrador activo."""
         if barcode not in self.items:
             return False, "El producto no está en el borrador."
 
@@ -191,12 +393,41 @@ class PosController:
             return self.remove_item(barcode)
 
         item = self.items[barcode]
-        if quantity > item.max_stock:
-            return False, f"No puedes superar el stock disponible ({item.max_stock})."
+        # Sincronizar stock disponible actual desde SQLite por si hubo ajustes en Inventario o In/Out
+        with get_db_session() as session:
+            prod = session.query(Product).filter_by(id=item.product_id).first()
+            if prod is not None:
+                item.max_stock = int(prod.stock or 0)
 
-        item.quantity = quantity
-        self._notify_change()
+        if quantity > item.max_stock:
+            if notify:
+                self._notify_change()
+            return False, f"No puedes superar el stock disponible ({item.max_stock} uds)."
+
+        item.quantity = int(quantity)
+        if notify:
+            self._notify_change()
         return True, "Cantidad actualizada."
+
+    def update_unit_price(self, barcode: str, new_price: float, notify: bool = True) -> tuple[bool, str]:
+        """
+        Sobrescribe manualmente el precio unitario de un ítem en el carrito activo (Modo Promoción).
+        REGLA CRÍTICA: Este cambio SOLO afecta a CartItem.sale_price (y posteriormente a InvoiceItem.unit_price
+        al facturar esta venta). BAJO NINGUNA CIRCUNSTANCIA modifica Product.sale_price en el Inventario general.
+        """
+        if barcode not in self.items:
+            return False, "El producto no está en el borrador."
+
+        if new_price < 0:
+            if notify:
+                self._notify_change()
+            return False, "El precio unitario no puede ser negativo."
+
+        item = self.items[barcode]
+        item.sale_price = round(float(new_price), 2)
+        if notify:
+            self._notify_change()
+        return True, f"Precio unitario ajustado a ${item.sale_price:,.0f} para esta venta."
 
     def remove_item(self, barcode: str) -> tuple[bool, str]:
         """Elimina un ítem del borrador."""
@@ -207,12 +438,13 @@ class PosController:
         return False, "Producto no encontrado en el carrito."
 
     def clear_draft(self) -> None:
-        """Limpia todo el borrador actual."""
+        """Limpia todo el borrador de la pestaña activa."""
         self.items.clear()
         self.customer_id = None
         self.payment_type = "CASH"
         self.credit_notes = ""
         self.discount = 0.0
+        self.cash_received_str = ""
         self._notify_change()
 
     def set_customer(self, customer_id: Optional[int]) -> None:
@@ -228,17 +460,19 @@ class PosController:
 
     def checkout(self, created_via: str = "POS_DESKTOP") -> tuple[bool, str, Optional[Invoice]]:
         """
-        Consolida el borrador en una Factura definitiva en la base de datos:
+        Consolida el borrador activo en una Factura definitiva en la base de datos:
         1. Valida que haya ítems.
         2. Si es crédito, valida que haya cliente asignado y que no supere límite si aplica.
-        3. Descuenta inventario atómicamente.
-        4. Crea la factura y sus renglones.
+        3. Descuenta inventario atómicamente (sin alterar jamás Product.sale_price).
+        4. Crea la factura y sus renglones (InvoiceItems guardan el unit_price de esta venta).
         """
         if not self.items:
             return False, "El borrador de venta está vacío.", None
 
         if self.payment_type == "CREDIT" and not self.customer_id:
             return False, "Para facturas a crédito es obligatorio seleccionar un cliente.", None
+
+        completed_tab_id = self.active_tab.tab_id
 
         with get_db_session() as session:
             # Validación de cliente asignado
@@ -270,7 +504,7 @@ class PosController:
             session.add(invoice)
             session.flush() # Obtiene invoice.id
 
-            # Descontar stock y registrar ítems históricos
+            # Descontar stock y registrar ítems históricos (usando item.sale_price en InvoiceItem sin tocar Product.sale_price)
             for item in self.items.values():
                 product = session.query(Product).filter_by(id=item.product_id).with_for_update().first()
                 if not product or product.stock < item.quantity:
@@ -301,8 +535,11 @@ class PosController:
             for itm in invoice.items:
                 _ = itm.product_name
 
-            # Limpiar borrador tras venta exitosa
-            self.clear_draft()
+            # Limpiar o cerrar la pestaña liquidada tras venta exitosa
+            if len(self.tabs) > 1:
+                self.close_tab(completed_tab_id)
+            else:
+                self.clear_draft()
             return True, f"Venta registrada exitosamente con factura #{invoice.invoice_number}", invoice
 
     # ================= ESTRUCTURA PARA FUTURA IA (VOZ) =================

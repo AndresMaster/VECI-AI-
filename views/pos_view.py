@@ -92,6 +92,32 @@ class PosView(ft.Container):
             content=self.suggestions_list,
         )
 
+        # Barra de Pestañas (Sistema de Facturación Múltiple)
+        self.tabs_bar_row = ft.Row(
+            spacing=8,
+            scroll=ft.ScrollMode.AUTO,
+            expand=True,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        )
+        self.new_sale_tab_btn = ft.FilledButton(
+            content=ft.Row(
+                spacing=6,
+                tight=True,
+                controls=[
+                    ft.Icon(ft.Icons.ADD_CIRCLE_OUTLINE_ROUNDED, size=18),
+                    ft.Text("Nueva Venta", size=13, weight=ft.FontWeight.BOLD),
+                ],
+            ),
+            style=ft.ButtonStyle(
+                bgcolor=PastelTheme.ACCENT_MINT,
+                color=PastelTheme.TEXT_ON_PRIMARY,
+                shape=ft.RoundedRectangleBorder(radius=PastelTheme.BORDER_RADIUS_BUTTON),
+                padding=ft.Padding.symmetric(horizontal=14, vertical=10),
+            ),
+            tooltip="Abrir una nueva pestaña de venta independiente en paralelo",
+            on_click=lambda _: self._on_new_sale_tab_click(),
+        )
+
         # Componentes de la tabla del carrito
         self.cart_items_column = ft.Column(spacing=6, scroll=ft.ScrollMode.AUTO, expand=True)
         self.cart_count_text = ft.Text("0 productos en el borrador", size=13, color=PastelTheme.TEXT_SECONDARY)
@@ -100,6 +126,56 @@ class PosView(ft.Container):
         self.total_display = ft.Text("$0.00", size=36, weight=ft.FontWeight.BOLD, color=PastelTheme.PRIMARY)
         self.subtotal_display = ft.Text("$0.00", size=14, color=PastelTheme.TEXT_SECONDARY)
         self.profit_display = ft.Text("Utilidad est: $0.00", size=12, weight=ft.FontWeight.W_600, color=PastelTheme.ACCENT_MINT)
+
+        # Calculadora Dinámica de Cambio (Vueltas)
+        self.cash_received_input = ft.TextField(
+            label="Efectivo Recibido",
+            hint_text="Ej: 50000",
+            prefix_icon=ft.Icons.PAYMENTS_OUTLINED,
+            keyboard_type=ft.KeyboardType.NUMBER,
+            border_radius=8,
+            bgcolor=PastelTheme.SURFACE_WHITE,
+            border_color=PastelTheme.PRIMARY,
+            focused_border_color=PastelTheme.ACCENT_MINT,
+            dense=True,
+            value=self.pos.cash_received_str,
+            on_change=self._on_cash_received_change,
+        )
+        self.change_value_text = ft.Text(
+            "$0",
+            size=28,
+            weight=ft.FontWeight.BOLD,
+            color=PastelTheme.ACCENT_MINT,
+        )
+        self.change_status_text = ft.Text(
+            "Ingrese efectivo recibido para calcular vueltas",
+            size=11,
+            weight=ft.FontWeight.W_600,
+            color=PastelTheme.TEXT_SECONDARY,
+            text_align=ft.TextAlign.CENTER,
+        )
+        self.change_display_card = ft.Container(
+            bgcolor=PastelTheme.MINT_PASTEL,
+            border_radius=12,
+            padding=ft.Padding.symmetric(horizontal=14, vertical=10),
+            border=ft.Border.all(1.5, PastelTheme.ACCENT_MINT),
+            alignment=ft.Alignment.CENTER,
+            content=ft.Column(
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                spacing=2,
+                tight=True,
+                controls=[
+                    ft.Text(
+                        "VUELTAS / CAMBIO",
+                        size=11,
+                        weight=ft.FontWeight.BOLD,
+                        color=PastelTheme.TEXT_PRIMARY,
+                    ),
+                    self.change_value_text,
+                    self.change_status_text,
+                ],
+            ),
+        )
 
         # Modalidad de Pago: Contado / Crédito
         self.payment_type_dropdown = ft.Dropdown(
@@ -230,7 +306,7 @@ class PosView(ft.Container):
         # Construcción del Layout Principal (Izquierda: Carrito, Derecha: Panel de Cobro)
         self.content = ft.Column(
             expand=True,
-            spacing=16,
+            spacing=12,
             controls=[
                 # Header Superior con estado del hardware y barra de escaneo
                 ft.Row(
@@ -240,7 +316,7 @@ class PosView(ft.Container):
                             spacing=2,
                             controls=[
                                 ft.Text("Punto de Venta (POS)", size=24, weight=ft.FontWeight.BOLD, color=PastelTheme.TEXT_PRIMARY),
-                                ft.Text("Caja registradora con persistencia de borrador y escáner automático", size=13, color=PastelTheme.TEXT_SECONDARY)
+                                ft.Text("Facturación múltiple por pestañas, precios promocionales y cálculo dinámico de vueltas", size=13, color=PastelTheme.TEXT_SECONDARY)
                             ]
                         ),
                         ft.Row([
@@ -257,6 +333,20 @@ class PosView(ft.Container):
                             )
                         ])
                     ]
+                ),
+
+                # Barra de Pestañas (Múltiples Ventas Concurrentes) + Botón "Nueva Venta"
+                create_card(
+                    padding=ft.Padding.symmetric(horizontal=12, vertical=8),
+                    content=ft.Row(
+                        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        spacing=12,
+                        controls=[
+                            self.tabs_bar_row,
+                            self.new_sale_tab_btn,
+                        ],
+                    ),
                 ),
 
                 # Tarjeta de Vista Previa de Cámara (Visible en modo Cámara)
@@ -304,12 +394,19 @@ class PosView(ft.Container):
                             padding=16,
                             content=ft.Column(
                                 expand=True,
-                                spacing=12,
+                                spacing=10,
                                 controls=[
                                     ft.Row(
                                         alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                                         controls=[
-                                            ft.Text("Productos en la Factura", size=16, weight=ft.FontWeight.BOLD, color=PastelTheme.TEXT_PRIMARY),
+                                            ft.Row(
+                                                spacing=8,
+                                                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                                                controls=[
+                                                    ft.Text("Productos en la Factura", size=16, weight=ft.FontWeight.BOLD, color=PastelTheme.TEXT_PRIMARY),
+                                                    create_badge("Precio y Cant. editables", PastelTheme.SKY_PASTEL, PastelTheme.ACCENT_SKY),
+                                                ],
+                                            ),
                                             self.cart_count_text
                                         ]
                                     ),
@@ -322,10 +419,10 @@ class PosView(ft.Container):
                                         content=ft.Row(
                                             controls=[
                                                 ft.Text("Producto", expand=3, size=12, weight=ft.FontWeight.BOLD, color=PastelTheme.TEXT_SECONDARY),
-                                                ft.Text("Precio", width=80, size=12, weight=ft.FontWeight.BOLD, color=PastelTheme.TEXT_SECONDARY),
-                                                ft.Text("Cant.", width=100, text_align=ft.TextAlign.CENTER, size=12, weight=ft.FontWeight.BOLD, color=PastelTheme.TEXT_SECONDARY),
-                                                ft.Text("Subtotal", width=90, size=12, weight=ft.FontWeight.BOLD, color=PastelTheme.TEXT_SECONDARY),
-                                                ft.Text("", width=40) # Espacio para botón eliminar
+                                                ft.Text("Precio Unit.", width=120, text_align=ft.TextAlign.CENTER, size=12, weight=ft.FontWeight.BOLD, color=PastelTheme.TEXT_SECONDARY),
+                                                ft.Text("Cantidad", width=135, text_align=ft.TextAlign.CENTER, size=12, weight=ft.FontWeight.BOLD, color=PastelTheme.TEXT_SECONDARY),
+                                                ft.Text("Subtotal", width=95, text_align=ft.TextAlign.RIGHT, size=12, weight=ft.FontWeight.BOLD, color=PastelTheme.TEXT_SECONDARY),
+                                                ft.Text("", width=36) # Espacio para botón eliminar
                                             ]
                                         )
                                     ),
@@ -338,10 +435,10 @@ class PosView(ft.Container):
                         # Columna Derecha: Panel de Liquidación y Cobro (con scroll vertical adaptable a cualquier resolución)
                         create_card(
                             expand=2,
-                            padding=20,
+                            padding=18,
                             content=ft.Column(
                                 expand=True,
-                                spacing=14,
+                                spacing=12,
                                 scroll=ft.ScrollMode.AUTO,
                                 horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
                                 controls=[
@@ -352,7 +449,7 @@ class PosView(ft.Container):
                                     ft.Container(
                                         bgcolor=PastelTheme.PRIMARY_PASTEL,
                                         border_radius=12,
-                                        padding=16,
+                                        padding=14,
                                         alignment=ft.Alignment.CENTER,
                                         content=ft.Column(
                                             horizontal_alignment=ft.CrossAxisAlignment.CENTER,
@@ -366,12 +463,16 @@ class PosView(ft.Container):
                                         )
                                     ),
 
+                                    # Calculadora Dinámica de Cambio (Vueltas) ANTES del botón de Cobrar/Pagar
+                                    self.cash_received_input,
+                                    self.change_display_card,
+
                                     # Configuración de Pago y Crédito
                                     self.payment_type_dropdown,
                                     self.customer_dropdown,
                                     self.credit_notes_input,
 
-                                    ft.Container(height=6),
+                                    ft.Container(height=4),
 
                                     # Botones de Acción
                                     ft.FilledButton(
@@ -637,8 +738,259 @@ class PosView(ft.Container):
                 self.scan_feedback_banner.visible = True
                 safe_update(self.scan_feedback_banner)
 
+    # ================= PESTAÑAS DE FACTURACIÓN MÚLTIPLE Y CALCULADORA DE CAMBIO =================
+
+    def _on_new_sale_tab_click(self) -> None:
+        """Crea una nueva pestaña de venta paralela en blanco y la activa."""
+        new_tab = self.pos.create_new_tab(notify=True)
+        self.scan_feedback_banner.value = f"✓ Nueva sesión abierta: {new_tab.title}"
+        self.scan_feedback_banner.color = PastelTheme.ACCENT_MINT
+        self.scan_feedback_banner.visible = True
+        safe_update(self.scan_feedback_banner)
+
+    def _rebuild_tabs_bar(self) -> None:
+        """Renderiza las pestañas de ventas paralelas abiertas (Venta 1, Venta 2, etc.)."""
+        tab_controls = []
+        active_id = self.pos.active_tab.tab_id
+        total_tabs = len(self.pos.tabs)
+
+        for tab in self.pos.tabs:
+            is_active = (tab.tab_id == active_id)
+            qty_count = tab.total_items_count
+            tab_total = tab.total
+
+            bg_color = PastelTheme.PRIMARY if is_active else PastelTheme.SURFACE_VARIANT
+            text_color = PastelTheme.TEXT_ON_PRIMARY if is_active else PastelTheme.TEXT_PRIMARY
+            sub_color = PastelTheme.PRIMARY_PASTEL if is_active else PastelTheme.TEXT_SECONDARY
+            border_side = ft.Border.all(1.5, PastelTheme.PRIMARY if is_active else PastelTheme.BORDER_LIGHT)
+
+            badge_label = f"{qty_count} uds • ${tab_total:,.0f}" if qty_count > 0 else "Vacía"
+
+            tab_pill = ft.Container(
+                bgcolor=bg_color,
+                border_radius=10,
+                border=border_side,
+                padding=ft.Padding.only(left=12, right=6, top=6, bottom=6),
+                ink=True,
+                on_click=lambda _, tid=tab.tab_id: self.pos.switch_tab(tid),
+                content=ft.Row(
+                    spacing=8,
+                    tight=True,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    controls=[
+                        ft.Icon(
+                            ft.Icons.RECEIPT_LONG_ROUNDED if is_active else ft.Icons.RECEIPT_OUTLINED,
+                            size=16,
+                            color=text_color,
+                        ),
+                        ft.Column(
+                            spacing=0,
+                            tight=True,
+                            controls=[
+                                ft.Text(
+                                    tab.title,
+                                    size=12,
+                                    weight=ft.FontWeight.BOLD,
+                                    color=text_color,
+                                ),
+                                ft.Text(
+                                    badge_label,
+                                    size=10,
+                                    color=sub_color,
+                                ),
+                            ],
+                        ),
+                        ft.IconButton(
+                            icon=ft.Icons.CLOSE_ROUNDED,
+                            icon_size=14,
+                            icon_color=text_color,
+                            tooltip="Cerrar pestaña" if total_tabs > 1 else "Limpiar pestaña",
+                            style=ft.ButtonStyle(
+                                padding=ft.Padding.all(2),
+                            ),
+                            on_click=lambda _, tid=tab.tab_id: self.pos.close_tab(tid),
+                        ),
+                    ],
+                ),
+            )
+            tab_controls.append(tab_pill)
+
+        self.tabs_bar_row.controls = tab_controls
+
+    def _on_cash_received_change(self, e) -> None:
+        """Evento dinámico (on_change) que calcula Vueltas = Efectivo Recibido - Total Factura al instante."""
+        raw_val = e.control.value if e and e.control else (self.cash_received_input.value or "")
+        self.pos.set_cash_received(raw_val, notify=False)
+        self._refresh_change_calculator(update_ui=True)
+
+    def _refresh_change_calculator(self, update_ui: bool = True) -> None:
+        """
+        Actualiza visualmente el cálculo de Vueltas = Efectivo Recibido - Total Factura.
+        - Si Efectivo Recibido >= Total: texto grande en verde (ACCENT_MINT).
+        - Si Efectivo Recibido < Total: aviso y texto en rojo (ACCENT_CORAL).
+        """
+        total = self.pos.total
+        raw_str = (self.pos.cash_received_str or "").strip()
+        received = self.pos.cash_received_amount
+        vueltas = round(received - total, 2)
+
+        if total <= 0 and not raw_str:
+            self.change_value_text.value = "$0"
+            self.change_value_text.color = PastelTheme.ACCENT_MINT
+            self.change_status_text.value = "Agregue productos e ingrese el efectivo recibido"
+            self.change_status_text.color = PastelTheme.TEXT_SECONDARY
+            self.change_display_card.bgcolor = PastelTheme.MINT_PASTEL
+            self.change_display_card.border = ft.Border.all(1.5, PastelTheme.ACCENT_MINT)
+        elif vueltas >= 0:
+            self.change_value_text.value = f"${vueltas:,.0f}"
+            self.change_value_text.color = PastelTheme.ACCENT_MINT
+            self.change_status_text.value = (
+                f"✓ Efectivo suficiente (${received:,.0f}) — Cambio a entregar"
+                if total > 0
+                else "✓ Efectivo recibido registrado"
+            )
+            self.change_status_text.color = PastelTheme.ACCENT_MINT
+            self.change_display_card.bgcolor = PastelTheme.MINT_PASTEL
+            self.change_display_card.border = ft.Border.all(1.5, PastelTheme.ACCENT_MINT)
+        else:
+            faltante = abs(vueltas)
+            self.change_value_text.value = f"-${faltante:,.0f}"
+            self.change_value_text.color = PastelTheme.ACCENT_CORAL
+            if not raw_str:
+                self.change_status_text.value = f"⚠ Efectivo pendiente: faltan ${faltante:,.0f} para cubrir el total"
+            else:
+                self.change_status_text.value = f"⚠ Efectivo insuficiente: faltan ${faltante:,.0f} para cubrir el total"
+            self.change_status_text.color = PastelTheme.ACCENT_CORAL
+            self.change_display_card.bgcolor = PastelTheme.CORAL_PASTEL
+            self.change_display_card.border = ft.Border.all(1.5, PastelTheme.ACCENT_CORAL)
+
+        if update_ui:
+            safe_update(self.change_display_card)
+
+    def _refresh_totals_and_change_only(self) -> None:
+        """
+        Refresca instantáneamente los totales generales, la barra de pestañas y las vueltas
+        sin reconstruir los TextFields del carrito (preservando el foco del teclado mientras se escribe).
+        """
+        items = list(self.pos.items.values())
+        self.total_display.value = f"${self.pos.total:,.0f}"
+        self.subtotal_display.value = f"Subtotal: ${self.pos.subtotal:,.0f}"
+        self.profit_display.value = f"Utilidad estimada: +${self.pos.total_estimated_profit:,.0f}"
+        self.cart_count_text.value = f"{len(items)} productos ({self.pos.total_items_count} unidades)"
+        self._rebuild_tabs_bar()
+        self._refresh_change_calculator(update_ui=False)
+        safe_update(self.total_display)
+        safe_update(self.subtotal_display)
+        safe_update(self.profit_display)
+        safe_update(self.cart_count_text)
+        safe_update(self.tabs_bar_row)
+        safe_update(self.change_display_card)
+
+    # ================= EDICIÓN RÁPIDA DE CANTIDAD Y PRECIO UNITARIO (MODO PROMOCIÓN) =================
+
+    def _on_item_qty_live_change(self, barcode: str, raw_val: str, subtotal_label: ft.Text) -> None:
+        """Recalcula en vivo el subtotal de la línea y el total general mientras el usuario digita la cantidad."""
+        cleaned = (raw_val or "").strip()
+        if not cleaned or not cleaned.isdigit():
+            return
+        new_qty = int(cleaned)
+        if new_qty <= 0:
+            return
+        item = self.pos.items.get(barcode)
+        if not item:
+            return
+        if new_qty > item.max_stock:
+            self.scan_feedback_banner.value = f"⚠ Stock máximo disponible para '{item.display_name}': {item.max_stock} uds."
+            self.scan_feedback_banner.color = PastelTheme.ACCENT_CORAL
+            self.scan_feedback_banner.visible = True
+            safe_update(self.scan_feedback_banner)
+            return
+
+        self.pos.update_quantity(barcode, new_qty, notify=False)
+        subtotal_label.value = f"${item.subtotal:,.0f}"
+        safe_update(subtotal_label)
+        self._refresh_totals_and_change_only()
+
+    def _commit_item_quantity(self, barcode: str, raw_val: str) -> None:
+        """Valida y consolida la cantidad al perder el foco (on_blur) o presionar Enter (on_submit)."""
+        item = self.pos.items.get(barcode)
+        if not item:
+            return
+        cleaned = (raw_val or "").strip()
+        if not cleaned:
+            self.on_cart_changed()
+            return
+        try:
+            new_qty = int(float(cleaned))
+        except ValueError:
+            self._show_banner_error("Ingrese una cantidad numérica entera válida.")
+            self.on_cart_changed()
+            return
+
+        if new_qty <= 0:
+            self.pos.remove_item(barcode)
+            return
+
+        if new_qty > item.max_stock:
+            self.pos.update_quantity(barcode, item.max_stock, notify=True)
+            self.scan_feedback_banner.value = (
+                f"⚠ Cantidad ajustada al stock máximo disponible ({item.max_stock} uds) para '{item.display_name}'."
+            )
+            self.scan_feedback_banner.color = PastelTheme.ACCENT_CORAL
+            self.scan_feedback_banner.visible = True
+            safe_update(self.scan_feedback_banner)
+            return
+
+        self.pos.update_quantity(barcode, new_qty, notify=True)
+
+    def _on_item_price_live_change(self, barcode: str, raw_val: str, subtotal_label: ft.Text) -> None:
+        """
+        Recalcula en vivo el subtotal de la línea y el total general cuando se edita el precio unitario.
+        REGLA CRÍTICA: Solo modifica CartItem.sale_price en esta venta (Modo Promoción), jamás el Inventario.
+        """
+        cleaned = (raw_val or "").strip().replace("$", "").replace(",", "").replace(" ", "")
+        if not cleaned:
+            return
+        try:
+            new_price = float(cleaned)
+        except ValueError:
+            return
+        if new_price < 0:
+            return
+        item = self.pos.items.get(barcode)
+        if not item:
+            return
+        self.pos.update_unit_price(barcode, new_price, notify=False)
+        subtotal_label.value = f"${item.subtotal:,.0f}"
+        safe_update(subtotal_label)
+        self._refresh_totals_and_change_only()
+
+    def _commit_item_price(self, barcode: str, raw_val: str) -> None:
+        """Consolida el precio promocional de la línea al perder el foco o presionar Enter."""
+        item = self.pos.items.get(barcode)
+        if not item:
+            return
+        cleaned = (raw_val or "").strip().replace("$", "").replace(",", "").replace(" ", "")
+        if not cleaned:
+            self.on_cart_changed()
+            return
+        try:
+            new_price = float(cleaned)
+        except ValueError:
+            self._show_banner_error("Ingrese un precio unitario numérico válido.")
+            self.on_cart_changed()
+            return
+
+        if new_price < 0:
+            self._show_banner_error("El precio unitario no puede ser negativo.")
+            self.on_cart_changed()
+            return
+
+        self.pos.update_unit_price(barcode, new_price, notify=True)
+
     def on_cart_changed(self) -> None:
-        """Refresca la UI reactivamente cuando el borrador cambia."""
+        """Refresca la UI reactivamente cuando el borrador o la pestaña activa cambia."""
+        self._rebuild_tabs_bar()
         self._refresh_customer_options()
         self.payment_type_dropdown.value = self.pos.payment_type
         is_credit = (self.pos.payment_type == "CREDIT")
@@ -648,18 +1000,83 @@ class PosView(ft.Container):
             "Descripción opcional del crédito" if is_credit else "Descripción opcional de la venta"
         )
         self.credit_notes_input.value = self.pos.credit_notes
+        if self.cash_received_input.value != self.pos.cash_received_str:
+            self.cash_received_input.value = self.pos.cash_received_str
 
         items = list(self.pos.items.values())
 
-        # Actualizar totales
+        # Actualizar totales y calculadora de cambio
         self.total_display.value = f"${self.pos.total:,.0f}"
         self.subtotal_display.value = f"Subtotal: ${self.pos.subtotal:,.0f}"
         self.profit_display.value = f"Utilidad estimada: +${self.pos.total_estimated_profit:,.0f}"
         self.cart_count_text.value = f"{len(items)} productos ({self.pos.total_items_count} unidades)"
+        self._refresh_change_calculator(update_ui=False)
 
-        # Renderizar filas del carrito
+        # Renderizar filas del carrito con Precio Unitario y Cantidad editables
         rows = []
         for item in items:
+            subtotal_label = ft.Text(
+                f"${item.subtotal:,.0f}",
+                width=95,
+                size=13,
+                weight=ft.FontWeight.BOLD,
+                color=PastelTheme.TEXT_PRIMARY,
+                text_align=ft.TextAlign.RIGHT,
+            )
+
+            price_str = (
+                str(int(item.sale_price))
+                if float(item.sale_price).is_integer()
+                else f"{item.sale_price:.2f}"
+            )
+            price_field = ft.TextField(
+                value=price_str,
+                width=110,
+                height=36,
+                dense=True,
+                prefix=ft.Text("$", size=11, color=PastelTheme.TEXT_SECONDARY),
+                keyboard_type=ft.KeyboardType.NUMBER,
+                text_align=ft.TextAlign.RIGHT,
+                text_size=12,
+                content_padding=ft.Padding.symmetric(horizontal=8, vertical=6),
+                border_radius=6,
+                bgcolor=PastelTheme.AMBER_PASTEL if item.is_promo_price else PastelTheme.SURFACE_VARIANT,
+                border_color=PastelTheme.ACCENT_AMBER if item.is_promo_price else PastelTheme.BORDER_LIGHT,
+                focused_border_color=PastelTheme.PRIMARY,
+                tooltip=(
+                    f"Modo Promoción activo (Precio original en inventario: ${item.original_sale_price:,.0f}). "
+                    "Solo aplica a esta factura."
+                    if item.is_promo_price
+                    else "Clic para editar el precio unitario solo en esta venta (Modo Promoción)"
+                ),
+                on_change=lambda e, b=item.barcode, lbl=subtotal_label: self._on_item_price_live_change(
+                    b, e.control.value, lbl
+                ),
+                on_submit=lambda e, b=item.barcode: self._commit_item_price(b, e.control.value),
+                on_blur=lambda e, b=item.barcode: self._commit_item_price(b, e.control.value),
+            )
+
+            qty_field = ft.TextField(
+                value=str(item.quantity),
+                width=56,
+                height=36,
+                dense=True,
+                keyboard_type=ft.KeyboardType.NUMBER,
+                text_align=ft.TextAlign.CENTER,
+                text_size=13,
+                content_padding=ft.Padding.symmetric(horizontal=4, vertical=6),
+                border_radius=6,
+                bgcolor=PastelTheme.SURFACE_VARIANT,
+                border_color=PastelTheme.BORDER_LIGHT,
+                focused_border_color=PastelTheme.PRIMARY,
+                tooltip=f"Escriba la cantidad directamente (Stock máx: {item.max_stock})",
+                on_change=lambda e, b=item.barcode, lbl=subtotal_label: self._on_item_qty_live_change(
+                    b, e.control.value, lbl
+                ),
+                on_submit=lambda e, b=item.barcode: self._commit_item_quantity(b, e.control.value),
+                on_blur=lambda e, b=item.barcode: self._commit_item_quantity(b, e.control.value),
+            )
+
             row = ft.Container(
                 bgcolor=PastelTheme.SURFACE_WHITE,
                 border_radius=8,
@@ -671,43 +1088,76 @@ class PosView(ft.Container):
                     controls=[
                         ft.Column(
                             expand=3,
-                            spacing=1,
+                            spacing=2,
                             controls=[
-                                ft.Text(item.display_name, size=13, weight=ft.FontWeight.BOLD, color=PastelTheme.TEXT_PRIMARY),
-                                ft.Text(f"Código: {item.barcode}", size=11, color=PastelTheme.TEXT_MUTED)
-                            ]
+                                ft.Row(
+                                    spacing=6,
+                                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                                    controls=[
+                                        ft.Text(
+                                            item.display_name,
+                                            size=13,
+                                            weight=ft.FontWeight.BOLD,
+                                            color=PastelTheme.TEXT_PRIMARY,
+                                        ),
+                                        *(
+                                            [
+                                                create_badge(
+                                                    f"Promo (Orig: ${item.original_sale_price:,.0f})",
+                                                    PastelTheme.AMBER_PASTEL,
+                                                    PastelTheme.ACCENT_AMBER,
+                                                )
+                                            ]
+                                            if item.is_promo_price
+                                            else []
+                                        ),
+                                    ],
+                                ),
+                                ft.Text(
+                                    f"Código: {item.barcode}  •  Disp: {item.max_stock} uds",
+                                    size=11,
+                                    color=PastelTheme.TEXT_MUTED,
+                                ),
+                            ],
                         ),
-                        ft.Text(f"${item.sale_price:,.0f}", width=80, size=12, color=PastelTheme.TEXT_SECONDARY),
+                        ft.Container(
+                            width=120,
+                            alignment=ft.Alignment.CENTER,
+                            content=price_field,
+                        ),
                         ft.Row(
-                            width=100,
+                            width=135,
                             alignment=ft.MainAxisAlignment.CENTER,
+                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
                             spacing=2,
                             controls=[
                                 ft.IconButton(
                                     icon=ft.Icons.REMOVE_CIRCLE_OUTLINE_ROUNDED,
                                     icon_size=18,
                                     icon_color=PastelTheme.TEXT_SECONDARY,
-                                    on_click=lambda _, b=item.barcode, q=item.quantity: self.pos.update_quantity(b, q - 1)
+                                    style=ft.ButtonStyle(padding=ft.Padding.all(2)),
+                                    on_click=lambda _, b=item.barcode, q=item.quantity: self.pos.update_quantity(b, q - 1),
                                 ),
-                                ft.Text(str(item.quantity), size=13, weight=ft.FontWeight.BOLD, color=PastelTheme.TEXT_PRIMARY),
+                                qty_field,
                                 ft.IconButton(
                                     icon=ft.Icons.ADD_CIRCLE_OUTLINE_ROUNDED,
                                     icon_size=18,
                                     icon_color=PastelTheme.PRIMARY,
-                                    on_click=lambda _, b=item.barcode, q=item.quantity: self.pos.update_quantity(b, q + 1)
-                                )
-                            ]
+                                    style=ft.ButtonStyle(padding=ft.Padding.all(2)),
+                                    on_click=lambda _, b=item.barcode, q=item.quantity: self.pos.update_quantity(b, q + 1),
+                                ),
+                            ],
                         ),
-                        ft.Text(f"${item.subtotal:,.0f}", width=90, size=13, weight=ft.FontWeight.BOLD, color=PastelTheme.TEXT_PRIMARY),
+                        subtotal_label,
                         ft.IconButton(
                             icon=ft.Icons.CLOSE_ROUNDED,
                             icon_size=16,
                             icon_color=PastelTheme.ACCENT_CORAL,
-                            tooltip="Quitar",
-                            on_click=lambda _, b=item.barcode: self.pos.remove_item(b)
-                        )
-                    ]
-                )
+                            tooltip="Quitar del carrito",
+                            on_click=lambda _, b=item.barcode: self.pos.remove_item(b),
+                        ),
+                    ],
+                ),
             )
             rows.append(row)
 
@@ -721,10 +1171,18 @@ class PosView(ft.Container):
                         spacing=8,
                         controls=[
                             ft.Icon(ft.Icons.SHOPPING_BAG_OUTLINED, size=48, color=PastelTheme.TEXT_MUTED),
-                            ft.Text("El borrador de venta está vacío.", size=14, color=PastelTheme.TEXT_SECONDARY),
-                            ft.Text("Escanee un código de barras o use el botón de simulación para comenzar.", size=12, color=PastelTheme.TEXT_MUTED)
-                        ]
-                    )
+                            ft.Text(
+                                f"El borrador de {self.pos.active_tab.title} está vacío.",
+                                size=14,
+                                color=PastelTheme.TEXT_SECONDARY,
+                            ),
+                            ft.Text(
+                                "Escanee un código de barras o busque por nombre para agregar productos.",
+                                size=12,
+                                color=PastelTheme.TEXT_MUTED,
+                            ),
+                        ],
+                    ),
                 )
             )
 
@@ -833,6 +1291,9 @@ class PosView(ft.Container):
     def _process_checkout(self, _) -> None:
         """Ejecuta el proceso de cobro con manejo defensivo de errores."""
         try:
+            cash_received_before = self.pos.cash_received_amount
+            change_due_before = self.pos.change_due
+
             success, message, invoice = self.pos.checkout()
             if not success:
                 self._show_banner_error(message)
@@ -860,11 +1321,39 @@ class PosView(ft.Container):
                         ft.Row(
                             alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                             controls=[
-                                ft.Text(f"{it.product_name} x{it.quantity}", size=12, color=PastelTheme.TEXT_PRIMARY),
+                                ft.Text(
+                                    f"{it.product_name} x{it.quantity} (@ ${it.unit_price:,.0f})",
+                                    size=12,
+                                    color=PastelTheme.TEXT_PRIMARY,
+                                ),
                                 ft.Text(f"${it.subtotal:,.0f}", size=12, weight=ft.FontWeight.W_500, color=PastelTheme.TEXT_PRIMARY)
                             ]
                         )
                     )
+
+            cash_info_controls = []
+            if cash_received_before > 0:
+                cash_info_controls.extend([
+                    ft.Row(
+                        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                        controls=[
+                            ft.Text("Efectivo Recibido:", size=12, color=PastelTheme.TEXT_SECONDARY),
+                            ft.Text(f"${cash_received_before:,.0f}", size=13, weight=ft.FontWeight.W_600),
+                        ],
+                    ),
+                    ft.Row(
+                        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                        controls=[
+                            ft.Text("Vueltas / Cambio:", size=13, weight=ft.FontWeight.BOLD, color=PastelTheme.ACCENT_MINT),
+                            ft.Text(
+                                f"${max(0.0, change_due_before):,.0f}",
+                                size=15,
+                                weight=ft.FontWeight.BOLD,
+                                color=PastelTheme.ACCENT_MINT,
+                            ),
+                        ],
+                    ),
+                ])
 
             # Modal de Confirmación de Factura / Ticket
             ticket_dialog = ft.AlertDialog(
@@ -882,7 +1371,7 @@ class PosView(ft.Container):
                             ft.Text(f"Fecha: {created_at_str}", size=12, color=PastelTheme.TEXT_MUTED),
                             ft.Text(f"Modalidad: {payment_type_str}", size=13),
                             *( [ft.Text(f"Cliente: {customer_name}", size=13, weight=ft.FontWeight.W_500)] if customer_name else [] ),
-                            *( [ft.Text(f"Detalle Crédito: {credit_notes_str}", size=12, italic=True)] if credit_notes_str else [] ),
+                            *( [ft.Text(f"Detalle / Notas: {credit_notes_str}", size=12, italic=True)] if credit_notes_str else [] ),
                             ft.Divider(color=PastelTheme.BORDER_LIGHT),
                             *items_controls,
                             ft.Divider(color=PastelTheme.BORDER_LIGHT),
@@ -892,13 +1381,14 @@ class PosView(ft.Container):
                                     ft.Text("TOTAL COBRADO:", weight=ft.FontWeight.BOLD),
                                     ft.Text(f"${total_val:,.0f}", size=18, weight=ft.FontWeight.BOLD, color=PastelTheme.PRIMARY)
                                 ]
-                            )
+                            ),
+                            *cash_info_controls,
                         ]
                     )
                 ),
                 actions=[
                     ft.FilledButton(
-                        "Aceptar y Nueva Venta",
+                        "Aceptar y Continuar",
                         bgcolor=PastelTheme.PRIMARY,
                         color=PastelTheme.TEXT_ON_PRIMARY,
                         on_click=lambda _: self.page.pop_dialog()

@@ -28,6 +28,12 @@ class InventoryView(ft.Container):
         self.padding = 24
         self.active_barcode_callback = None
 
+        # Estado de Paginación Server-Side / SQLite (LIMIT 50 OFFSET X)
+        self.current_page: int = 1
+        self.page_size: int = 50
+        self.total_pages: int = 1
+        self.total_records: int = 0
+
         self.search_field = ft.TextField(
             hint_text="Buscar por nombre, código o categoría...",
             prefix_icon=ft.Icons.SEARCH_ROUNDED,
@@ -36,11 +42,77 @@ class InventoryView(ft.Container):
             border_color=PastelTheme.BORDER_LIGHT,
             dense=True,
             expand=True,
-            on_change=lambda _: self.load_products()
+            on_change=self._on_search_change,
         )
 
         self.summary_kpi_row = ft.Row(spacing=16)
         self.table_column = ft.Column(spacing=6, scroll=ft.ScrollMode.AUTO, expand=True)
+
+        # Controles de Navegación de Paginación ("Anterior" | "Página X de Y" | "Siguiente")
+        self.prev_page_btn = ft.OutlinedButton(
+            content=ft.Row(
+                spacing=4,
+                tight=True,
+                controls=[
+                    ft.Icon(ft.Icons.CHEVRON_LEFT_ROUNDED, size=18),
+                    ft.Text("Anterior", size=12, weight=ft.FontWeight.W_600),
+                ],
+            ),
+            disabled=True,
+            style=ft.ButtonStyle(
+                shape=ft.RoundedRectangleBorder(radius=8),
+                padding=ft.Padding.symmetric(horizontal=12, vertical=8),
+            ),
+            on_click=self._on_prev_page,
+        )
+        self.page_indicator_text = ft.Text(
+            "Página 1 de 1",
+            size=13,
+            weight=ft.FontWeight.BOLD,
+            color=PastelTheme.TEXT_PRIMARY,
+        )
+        self.records_range_text = ft.Text(
+            "0 registros",
+            size=12,
+            color=PastelTheme.TEXT_SECONDARY,
+        )
+        self.next_page_btn = ft.OutlinedButton(
+            content=ft.Row(
+                spacing=4,
+                tight=True,
+                controls=[
+                    ft.Text("Siguiente", size=12, weight=ft.FontWeight.W_600),
+                    ft.Icon(ft.Icons.CHEVRON_RIGHT_ROUNDED, size=18),
+                ],
+            ),
+            disabled=True,
+            style=ft.ButtonStyle(
+                shape=ft.RoundedRectangleBorder(radius=8),
+                padding=ft.Padding.symmetric(horizontal=12, vertical=8),
+            ),
+            on_click=self._on_next_page,
+        )
+        self.pagination_bar = ft.Container(
+            bgcolor=PastelTheme.SURFACE_VARIANT,
+            padding=ft.Padding.symmetric(horizontal=16, vertical=8),
+            border_radius=8,
+            content=ft.Row(
+                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                controls=[
+                    self.records_range_text,
+                    ft.Row(
+                        spacing=12,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        controls=[
+                            self.prev_page_btn,
+                            self.page_indicator_text,
+                            self.next_page_btn,
+                        ],
+                    ),
+                ],
+            ),
+        )
 
         self.content = ft.Column(
             expand=True,
@@ -131,8 +203,10 @@ class InventoryView(ft.Container):
                                     ]
                                 )
                             ),
-                            # Table Rows
-                            self.table_column
+                            # Table Rows (Solo 50 registros por página)
+                            self.table_column,
+                            # Controles de Paginación Inferiores
+                            self.pagination_bar,
                         ]
                     ),
                     expand=True,
@@ -143,14 +217,48 @@ class InventoryView(ft.Container):
 
         self.load_products()
 
-    def load_products(self) -> None:
-        """Carga la lista de productos filtrada desde la base de datos y actualiza las casillas superiores."""
-        query = self.search_field.value or ""
-        products = self.controller.get_all_products(query)
-        all_products = products if not query.strip() else self.controller.get_all_products("")
+    def _on_search_change(self, _=None) -> None:
+        self.current_page = 1
+        self.load_products()
 
-        total_units = sum(max(0, int(p.get("stock", 0))) for p in all_products)
-        total_by_name = len(all_products)
+    def _on_prev_page(self, _=None) -> None:
+        if self.current_page > 1:
+            self.current_page -= 1
+            self.load_products()
+
+    def _on_next_page(self, _=None) -> None:
+        if self.current_page < self.total_pages:
+            self.current_page += 1
+            self.load_products()
+
+    def load_products(self) -> None:
+        """
+        Carga únicamente 50 productos por página desde SQLite (LIMIT 50 OFFSET X)
+        y actualiza las casillas superiores mediante agregación SQL rápida.
+        """
+        query = self.search_field.value or ""
+        paginated = self.controller.get_products_paginated(
+            search_query=query,
+            page=self.current_page,
+            page_size=self.page_size,
+        )
+        products = paginated["items"]
+        self.current_page = paginated["page"]
+        self.total_pages = paginated["total_pages"]
+        self.total_records = paginated["total_records"]
+        offset_val = paginated["offset"]
+
+        total_units = paginated["total_units"]
+        total_by_name = paginated["total_by_name"]
+
+        start_idx = (offset_val + 1) if self.total_records > 0 else 0
+        end_idx = min(offset_val + len(products), self.total_records)
+        self.page_indicator_text.value = f"Página {self.current_page} de {self.total_pages}"
+        self.records_range_text.value = (
+            f"Mostrando {start_idx}–{end_idx} de {self.total_records:,} productos (50 por página)"
+        )
+        self.prev_page_btn.disabled = (self.current_page <= 1)
+        self.next_page_btn.disabled = (self.current_page >= self.total_pages)
 
         self.summary_kpi_row.controls = [
             create_metric_tile(
@@ -591,10 +699,34 @@ class InventoryView(ft.Container):
             visible=has_initial and bool(initial_scan_data.get("status_message"))
         )
 
+        apply_20_cb = ft.Checkbox(
+            label="Aplicar 20% (Costo de compra = Precio de venta ÷ 1.2)",
+            value=False,
+            active_color=PastelTheme.PRIMARY,
+            tooltip="Divide automáticamente el Precio de Venta entre 1.2 y lo asigna en Costo de Compra",
+        )
+
+        def _compute_cost_from_sale_20() -> None:
+            try:
+                raw_s = (sale_tf.value or "").strip().replace("$", "").replace(",", "")
+                s_val = float(raw_s) if raw_s else 0.0
+                if s_val > 0:
+                    calc_cost = round(s_val / 1.2, 2)
+                    cost_tf.value = (
+                        str(int(calc_cost))
+                        if calc_cost.is_integer()
+                        else f"{calc_cost:.2f}"
+                    )
+                else:
+                    cost_tf.value = "0"
+                safe_update(cost_tf)
+            except ValueError:
+                pass
+
         def recalculate_profit(_=None):
             try:
-                c = float(cost_tf.value or 0)
-                s = float(sale_tf.value or 0)
+                c = float((cost_tf.value or "0").replace(",", ""))
+                s = float((sale_tf.value or "0").replace(",", ""))
                 profit = s - c
                 pct = ((s - c) / s * 100) if s > 0 else 0
                 profit_preview.value = f"Utilidad calculada: ${profit:,.2f} ({pct:.1f}%)"
@@ -604,8 +736,25 @@ class InventoryView(ft.Container):
                 profit_preview.color = PastelTheme.ACCENT_CORAL
             safe_update(profit_preview)
 
-        cost_tf.on_change = recalculate_profit
-        sale_tf.on_change = recalculate_profit
+        def on_sale_price_change(e=None):
+            if apply_20_cb.value:
+                _compute_cost_from_sale_20()
+            recalculate_profit()
+
+        def on_cost_price_change(e=None):
+            if apply_20_cb.value:
+                apply_20_cb.value = False
+                safe_update(apply_20_cb)
+            recalculate_profit()
+
+        def on_apply_20_toggle(e=None):
+            if apply_20_cb.value:
+                _compute_cost_from_sale_20()
+            recalculate_profit()
+
+        cost_tf.on_change = on_cost_price_change
+        sale_tf.on_change = on_sale_price_change
+        apply_20_cb.on_change = on_apply_20_toggle
         recalculate_profit()
 
         def on_barcode_scanned_or_entered(code_val: Optional[str] = None):
@@ -747,6 +896,12 @@ class InventoryView(ft.Container):
                         name_tf,
                         ft.Row([brand_tf, presentacion_tf], spacing=10),
                         ft.Row([cost_tf, sale_tf], spacing=10),
+                        ft.Container(
+                            bgcolor=PastelTheme.SURFACE_VARIANT,
+                            padding=ft.Padding.symmetric(horizontal=10, vertical=4),
+                            border_radius=8,
+                            content=apply_20_cb,
+                        ),
                         ft.Container(
                             bgcolor=PastelTheme.MINT_PASTEL,
                             padding=10,

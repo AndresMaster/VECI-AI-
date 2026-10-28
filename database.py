@@ -19,6 +19,7 @@ from models import (
     InvoiceItem,
     InvoicePayment,
     GastosGenerales,
+    RegistroAnulaciones,
 )
 
 # ================= 1. BASE DE DATOS MAESTRA DE AUTENTICACIÓN (auth.db) =================
@@ -199,6 +200,15 @@ def _migrate_database_schema(target_engine: Optional[Engine] = None) -> None:
                 "UPDATE suppliers SET created_at = created_at || ' 00:00:00' "
                 "WHERE created_at IS NOT NULL AND length(trim(created_at)) = 10"
             ))
+
+            # 4. Asegurar índices B-Tree en bases de datos existentes (>900 productos y transacciones)
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_products_barcode ON products (barcode)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_products_name ON products (name)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_products_is_active ON products (is_active)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_invoices_created_at ON invoices (created_at)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_registro_anulaciones_fecha_anulacion ON registro_anulaciones (fecha_anulacion)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_supplier_purchases_fecha_hora ON supplier_purchases (fecha_hora)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_gastos_generales_fecha_hora ON gastos_generales (fecha_hora)"))
             conn.commit()
         except Exception as e:
             print(f"[Database Migration Warning]: {e}")

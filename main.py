@@ -166,7 +166,15 @@ def main(page: ft.Page) -> None:
             on_inventory_changed=lambda: (inventory_view.load_products(), dashboard_view.refresh_data()),
         )
         cartera_view = CarteraView(customer_controller)
-        cash_flow_view = CashFlowView(dashboard_controller)
+        cash_flow_view = CashFlowView(
+            dashboard_controller,
+            on_sale_reversed=lambda: (
+                inventory_view.load_products(),
+                in_out_view.load_products(),
+                cartera_view.load_data(),
+                dashboard_view.refresh_data(),
+            ),
+        )
 
         def on_barcode_scanned(code: str) -> None:
             print(f"[Hardware Barcode] Código detectado: {code}")
