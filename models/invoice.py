@@ -145,19 +145,53 @@ class InvoiceItem(Base):
     invoice = relationship("Invoice", back_populates="items")
     product = relationship("Product", back_populates="invoice_items", lazy="joined")
 
+    # ================= ALIASES SNAPSHOT EN ESPAÑOL (DETALLE FACTURA) =================
+
+    @property
+    def precio_unitario(self) -> float:
+        return self.unit_price
+
+    @precio_unitario.setter
+    def precio_unitario(self, value: float) -> None:
+        self.unit_price = value
+
+    @property
+    def costo_unitario(self) -> float:
+        return self.unit_cost
+
+    @costo_unitario.setter
+    def costo_unitario(self, value: float) -> None:
+        self.unit_cost = value
+
+    @property
+    def nombre_producto_snapshot(self) -> str:
+        return self.product_name
+
+    @nombre_producto_snapshot.setter
+    def nombre_producto_snapshot(self, value: str) -> None:
+        self.product_name = value
+
     @property
     def display_product_name(self) -> str:
         """
-        Nombre del producto concatenado con su presentación física (ej. 'Chocoramo - 65g'),
-        cruzando datos con el modelo Product si la factura histórica no tenía presentación separada.
+        Retorna el nombre snapshot guardado en la factura (self.product_name),
+        concatenando su presentación física si aplica.
+        En ventas de 'Comodín / Venta Libre', respeta estrictamente el nombre/descripción
+        personalizado guardado en self.product_name al momento de la venta.
         """
+        snapshot_name = (self.product_name or "").strip()
+        is_wildcard = (
+            (self.barcode or "").startswith("COMODIN")
+            or (self.product is not None and self.product.barcode == "COMODIN-VENTA-LIBRE")
+        )
+        if is_wildcard and snapshot_name:
+            return snapshot_name
+
         pres = (self.presentacion or "").strip()
         if not pres and self.product and self.product.presentacion:
             pres = self.product.presentacion.strip()
 
-        base_name = (self.product.name if self.product else self.product_name or "").strip()
-        if not base_name:
-            base_name = (self.product_name or "").strip()
+        base_name = snapshot_name or (self.product.name if self.product else "").strip()
 
         if pres:
             # Si base_name terminaba con la presentación sin guion (ej. 'Leche Entera 1L'), normalizar con ' - '
@@ -166,7 +200,7 @@ class InvoiceItem(Base):
             if base_name.endswith(f" {pres}"):
                 base_name = base_name[: -len(pres)].strip()
             return f"{base_name} - {pres}"
-        return self.product_name or base_name
+        return snapshot_name or base_name
 
     @property
     def unit_profit(self) -> float:
@@ -182,11 +216,14 @@ class InvoiceItem(Base):
             "product_id": self.product_id,
             "barcode": self.barcode,
             "product_name": self.product_name,
+            "nombre_producto_snapshot": self.product_name,
             "display_name": self.display_product_name,
             "presentacion": (self.presentacion or (self.product.presentacion if self.product else "") or ""),
             "category": (self.product.category if self.product else "General"),
             "unit_cost": round(float(self.unit_cost or 0.0), 2),
+            "costo_unitario": round(float(self.unit_cost or 0.0), 2),
             "unit_price": round(float(self.unit_price or 0.0), 2),
+            "precio_unitario": round(float(self.unit_price or 0.0), 2),
             "quantity": int(self.quantity or 0),
             "subtotal": round(float(self.subtotal or 0.0), 2),
             "total_profit": self.total_profit,

@@ -15,13 +15,16 @@ class CustomerController:
     def get_all_customers(self, search_query: str = "") -> List[Dict[str, Any]]:
         with get_db_session() as session:
             query = session.query(Customer).filter(Customer.is_active == True)
-            if search_query.strip():
+            if search_query and search_query.strip():
                 term = f"%{search_query.strip()}%"
                 query = query.filter(
                     or_(
                         Customer.name.ilike(term),
                         Customer.document_id.ilike(term),
-                        Customer.phone.ilike(term)
+                        Customer.phone.ilike(term),
+                        Customer.email.ilike(term),
+                        Customer.address.ilike(term),
+                        Customer.notes.ilike(term),
                     )
                 )
             customers = query.order_by(Customer.name.asc()).all()
@@ -250,13 +253,16 @@ class CustomerController:
     def get_all_suppliers(self, search_query: str = "") -> List[Dict[str, Any]]:
         with get_db_session() as session:
             query = session.query(Supplier).filter(Supplier.is_active == True)
-            if search_query.strip():
+            if search_query and search_query.strip():
                 term = f"%{search_query.strip()}%"
                 query = query.filter(
                     or_(
                         Supplier.name.ilike(term),
                         Supplier.contact_name.ilike(term),
-                        Supplier.phone.ilike(term)
+                        Supplier.phone.ilike(term),
+                        Supplier.email.ilike(term),
+                        Supplier.address.ilike(term),
+                        Supplier.notes.ilike(term),
                     )
                 )
             suppliers = query.order_by(Supplier.name.asc()).all()

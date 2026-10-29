@@ -281,12 +281,14 @@ class InventoryView(ft.Container):
 
         rows = []
         for p in products:
-            is_low = p["is_low_stock"]
-            stock_badge = (
-                create_badge(f"{p['stock']} (Bajo)", PastelTheme.CORAL_PASTEL, PastelTheme.ACCENT_CORAL)
-                if is_low else
-                create_badge(f"{p['stock']} uds", PastelTheme.MINT_PASTEL, PastelTheme.ACCENT_MINT)
-            )
+            is_infinite = bool(p.get("stock_infinito", False))
+            is_low = False if is_infinite else bool(p.get("is_low_stock", False))
+            if is_infinite:
+                stock_badge = create_badge("∞", PastelTheme.SKY_PASTEL, PastelTheme.ACCENT_SKY)
+            elif is_low:
+                stock_badge = create_badge(f"{p['stock']} (Bajo)", PastelTheme.CORAL_PASTEL, PastelTheme.ACCENT_CORAL)
+            else:
+                stock_badge = create_badge(f"{p['stock']} uds", PastelTheme.MINT_PASTEL, PastelTheme.ACCENT_MINT)
 
             row = ft.Container(
                 padding=ft.Padding.symmetric(horizontal=16, vertical=10),
@@ -604,6 +606,7 @@ class InventoryView(ft.Container):
         init_sale = "0"
         init_stock = "0"
         init_min_stock = "5"
+        init_stock_infinito = False
 
         if is_edit:
             init_barcode = product.get("barcode", "")
@@ -615,6 +618,7 @@ class InventoryView(ft.Container):
             init_sale = str(product.get("sale_price", 0))
             init_stock = str(product.get("stock", 0))
             init_min_stock = str(product.get("min_stock", 5))
+            init_stock_infinito = bool(product.get("stock_infinito", False))
         elif has_initial:
             init_barcode = initial_scan_data.get("barcode", "")
             init_name = initial_scan_data.get("name", "")
@@ -668,12 +672,13 @@ class InventoryView(ft.Container):
             expand=True
         )
         stock_tf = ft.TextField(
-            label="Cantidad en Stock",
+            label="Cantidad en Stock" if is_edit else "Cantidad Inicial",
             value=init_stock,
             keyboard_type=ft.KeyboardType.NUMBER,
             border_radius=8,
             dense=True,
-            expand=True
+            expand=True,
+            disabled=init_stock_infinito,
         )
         min_stock_tf = ft.TextField(
             label="Stock Mínimo (Alerta)",
@@ -681,8 +686,56 @@ class InventoryView(ft.Container):
             keyboard_type=ft.KeyboardType.NUMBER,
             border_radius=8,
             dense=True,
-            expand=True
+            expand=True,
+            disabled=init_stock_infinito,
         )
+        stock_row_container = ft.Container(
+            visible=not init_stock_infinito,
+            content=ft.Row([stock_tf, min_stock_tf], spacing=10),
+        )
+
+        stock_infinito_sw = ft.Switch(
+            label="¿Stock Infinito / Preparado en sitio?",
+            value=init_stock_infinito,
+            active_color=PastelTheme.PRIMARY,
+            tooltip="Actívalo para artículos preparados al instante (ej. café/tintos) o servicios sin control de existencias",
+        )
+
+        def on_stock_infinito_toggle(_=None):
+            is_inf = bool(stock_infinito_sw.value)
+            stock_tf.disabled = is_inf
+            min_stock_tf.disabled = is_inf
+            stock_row_container.visible = not is_inf
+            safe_update(stock_row_container)
+            safe_update(dialog)
+
+        stock_infinito_sw.on_change = on_stock_infinito_toggle
+
+        stock_infinito_card = ft.Container(
+            bgcolor=PastelTheme.SKY_PASTEL,
+            padding=ft.Padding.symmetric(horizontal=12, vertical=8),
+            border_radius=10,
+            border=ft.Border.all(1, PastelTheme.ACCENT_SKY),
+            content=ft.Column(
+                spacing=2,
+                controls=[
+                    ft.Row(
+                        spacing=8,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        controls=[
+                            ft.Icon(ft.Icons.ALL_INCLUSIVE_ROUNDED, size=20, color=PastelTheme.ACCENT_SKY),
+                            ft.Container(expand=True, content=stock_infinito_sw),
+                        ],
+                    ),
+                    ft.Text(
+                        "Ideal para café/tintos, comidas preparadas o servicios (no descuenta inventario ni genera alertas de stock bajo).",
+                        size=11,
+                        color=PastelTheme.TEXT_SECONDARY,
+                    ),
+                ],
+            ),
+        )
+
         category_tf = ft.TextField(
             label="Categoría",
             value=init_category,
@@ -828,12 +881,17 @@ class InventoryView(ft.Container):
             self.page.pop_dialog()
 
         def save_product(_):
+            is_inf = bool(stock_infinito_sw.value)
             try:
-                c_val = float(cost_tf.value)
-                s_val = float(sale_tf.value)
-                stk_val = int(stock_tf.value)
-                min_stk_val = int(min_stock_tf.value)
+                c_val = float((cost_tf.value or "0").replace(",", ""))
+                s_val = float((sale_tf.value or "0").replace(",", ""))
+                stk_val = 0 if is_inf else int((stock_tf.value or "0").strip() or "0")
+                min_stk_val = 0 if is_inf else int((min_stock_tf.value or "5").strip() or "5")
             except ValueError:
+                off_status_text.value = "Por favor verifica que los precios y cantidades sean números válidos."
+                off_status_text.color = PastelTheme.ACCENT_CORAL
+                off_status_text.visible = True
+                safe_update(off_status_text)
                 return
 
             if is_edit:
@@ -847,7 +905,8 @@ class InventoryView(ft.Container):
                     min_stock=min_stk_val,
                     brand=brand_tf.value,
                     presentacion=presentacion_tf.value,
-                    category=category_tf.value
+                    category=category_tf.value,
+                    stock_infinito=is_inf,
                 )
             else:
                 success, msg, _ = self.controller.create_product(
@@ -859,7 +918,8 @@ class InventoryView(ft.Container):
                     min_stock=min_stk_val,
                     brand=brand_tf.value,
                     presentacion=presentacion_tf.value,
-                    category=category_tf.value
+                    category=category_tf.value,
+                    stock_infinito=is_inf,
                 )
 
             if success:
@@ -908,7 +968,8 @@ class InventoryView(ft.Container):
                             border_radius=8,
                             content=profit_preview
                         ),
-                        ft.Row([stock_tf, min_stock_tf], spacing=10),
+                        stock_infinito_card,
+                        stock_row_container,
                         category_tf
                     ]
                 )

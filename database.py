@@ -12,6 +12,8 @@ from models import (
     AuthBase,
     User,
     Product,
+    WILDCARD_PRODUCT_BARCODE,
+    WILDCARD_PRODUCT_NAME,
     Customer,
     Supplier,
     SupplierPurchase,
@@ -111,6 +113,8 @@ def connect_tenant_db(username: str, seed_sample_data: bool = False) -> Path:
     if seed_sample_data:
         _seed_demo_data_if_empty()
 
+    ensure_wildcard_product()
+
     _active_tenant_username = username
     _active_tenant_db_path = tenant_path
     return tenant_path
@@ -167,7 +171,7 @@ def _migrate_database_schema(target_engine: Optional[Engine] = None) -> None:
     active_eng = target_engine or engine
     with active_eng.connect() as conn:
         try:
-            # 1. products.presentacion y products.brand
+            # 1. products.presentacion, products.brand y products.stock_infinito
             res_prod = conn.execute(text("PRAGMA table_info(products)"))
             prod_cols = [row[1] for row in res_prod.fetchall()]
             if "presentacion" not in prod_cols:
@@ -176,6 +180,11 @@ def _migrate_database_schema(target_engine: Optional[Engine] = None) -> None:
             if "brand" not in prod_cols:
                 conn.execute(text("ALTER TABLE products ADD COLUMN brand VARCHAR(100) DEFAULT ''"))
                 conn.commit()
+            if "stock_infinito" not in prod_cols:
+                conn.execute(text("ALTER TABLE products ADD COLUMN stock_infinito BOOLEAN NOT NULL DEFAULT 0"))
+                conn.commit()
+            conn.execute(text("UPDATE products SET stock_infinito = 0 WHERE stock_infinito IS NULL"))
+            conn.commit()
 
             # 2. invoice_items.presentacion
             res_inv_items = conn.execute(text("PRAGMA table_info(invoice_items)"))
@@ -214,10 +223,54 @@ def _migrate_database_schema(target_engine: Optional[Engine] = None) -> None:
             print(f"[Database Migration Warning]: {e}")
 
 
+def ensure_wildcard_product() -> Product:
+    """
+    Garantiza que exista un único Producto de sistema llamado 'Comodín / Venta Libre'
+    con stock_infinito=True en la base de datos activa para soportar Ventas Libres
+    sin romper las llaves foráneas (Foreign Keys) ni ensuciar el catálogo de inventario.
+    """
+    with get_db_session() as session:
+        wildcard = (
+            session.query(Product)
+            .filter(Product.barcode == WILDCARD_PRODUCT_BARCODE)
+            .first()
+        )
+        if not wildcard:
+            wildcard = Product(
+                barcode=WILDCARD_PRODUCT_BARCODE,
+                name=WILDCARD_PRODUCT_NAME,
+                brand="Sistema",
+                presentacion="",
+                description="Producto comodín de sistema para Ventas Libres con precio y costo definidos al vuelo.",
+                cost_price=0.0,
+                sale_price=0.0,
+                stock=0,
+                min_stock=0,
+                stock_infinito=True,
+                category="Venta Libre",
+                is_active=True,
+            )
+            session.add(wildcard)
+            session.commit()
+            session.refresh(wildcard)
+        else:
+            changed = False
+            if not bool(wildcard.stock_infinito):
+                wildcard.stock_infinito = True
+                changed = True
+            if not bool(wildcard.is_active):
+                wildcard.is_active = True
+                changed = True
+            if changed:
+                session.commit()
+                session.refresh(wildcard)
+        return wildcard
+
+
 def init_db(seed_sample_data: bool = True) -> None:
     """
     Crea todas las tablas definidas en los modelos ORM sobre el engine actual.
-    También asegura que auth.db esté inicializada.
+    También asegura que auth.db esté inicializada y crea el Producto Comodín de sistema.
     """
     init_auth_db()
     Base.metadata.create_all(bind=engine)
@@ -226,13 +279,18 @@ def init_db(seed_sample_data: bool = True) -> None:
     if seed_sample_data:
         _seed_demo_data_if_empty()
 
+    ensure_wildcard_product()
 
 
 def _seed_demo_data_if_empty() -> None:
     """Precarga datos iniciales para pruebas inmediatas si las tablas están vacías."""
     with get_db_session() as session:
         # 1. Productos, Clientes y Proveedores iniciales
-        existing_products = session.query(Product).all()
+        existing_products = (
+            session.query(Product)
+            .filter(Product.barcode != WILDCARD_PRODUCT_BARCODE)
+            .all()
+        )
         if existing_products:
             demo_map = {
                 "7701001001": ("Leche Entera", "1L"),

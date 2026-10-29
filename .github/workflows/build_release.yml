@@ -75,14 +75,14 @@ jobs:
           ln -s /Applications "dmg_staging/Applications"
 
           hdiutil create \
-            -volname "VECI AI v1.0.3 Installer" \
+            -volname "VECI AI v1.0.4 Installer" \
             -srcfolder "dmg_staging" \
             -ov -format UDZO \
-            "installer_output/VECI_AI_macOS_v1.0.3.dmg"
+            "installer_output/VECI_AI_macOS_v1.0.4.dmg"
 
           ditto -c -k --sequesterRsrc --keepParent \
             "dist/VECI_AI.app" \
-            "installer_output/VECI_AI_macOS_v1.0.3.zip"
+            "installer_output/VECI_AI_macOS_v1.0.4.zip"
 
           ls -lh installer_output/
 
@@ -91,8 +91,8 @@ jobs:
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4
         with:
-          name: VECI_AI-Windows-Installer-v1.0.3
-          path: installer_output/Veci_AI_Setup_v1.0.3.exe
+          name: VECI_AI-Windows-Installer-v1.0.4
+          path: installer_output/Veci_AI_Setup_v1.0.4.exe
           if-no-files-found: error
           retention-days: 30
 
@@ -100,10 +100,10 @@ jobs:
         if: runner.os == 'macOS'
         uses: actions/upload-artifact@v4
         with:
-          name: VECI_AI-macOS-Installer-v1.0.3
+          name: VECI_AI-macOS-Installer-v1.0.4
           path: |
-            installer_output/VECI_AI_macOS_v1.0.3.dmg
-            installer_output/VECI_AI_macOS_v1.0.3.zip
+            installer_output/VECI_AI_macOS_v1.0.4.dmg
+            installer_output/VECI_AI_macOS_v1.0.4.zip
           if-no-files-found: error
           retention-days: 30
 

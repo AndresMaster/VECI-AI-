@@ -19,8 +19,34 @@ class CarteraView(ft.Container):
         self.padding = 24
 
         self.current_tab = "CLIENTES"  # "CLIENTES" o "PROVEEDORES"
+        self.customer_search_query: str = ""
+        self.supplier_search_query: str = ""
 
         self.list_column = ft.Column(spacing=10, scroll=ft.ScrollMode.AUTO, expand=True)
+
+        self.search_field = ft.TextField(
+            hint_text="Buscar cliente por nombre, documento (Cédula/NIT), teléfono, correo o dirección...",
+            prefix_icon=ft.Icons.SEARCH_ROUNDED,
+            border_radius=PastelTheme.BORDER_RADIUS_INPUT,
+            bgcolor=PastelTheme.SURFACE_WHITE,
+            border_color=PastelTheme.BORDER_LIGHT,
+            dense=True,
+            expand=True,
+            on_change=self._on_search_change,
+        )
+
+        self.results_count_text = ft.Text(
+            "0 clientes",
+            size=12,
+            weight=ft.FontWeight.W_600,
+            color=PastelTheme.PRIMARY,
+        )
+        self.results_count_badge = ft.Container(
+            bgcolor=PastelTheme.PRIMARY_PASTEL,
+            border_radius=12,
+            padding=ft.Padding.symmetric(horizontal=12, vertical=6),
+            content=self.results_count_text,
+        )
 
         self.tab_clientes_btn = ft.FilledButton(
             "Clientes y Créditos",
@@ -71,13 +97,37 @@ class CarteraView(ft.Container):
                     ]
                 ),
 
-                # Selector de Pestaña
+                # Selector de Pestaña + Buscador en vivo para Clientes y Proveedores
                 ft.Row(
-                    spacing=10,
+                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    spacing=12,
                     controls=[
-                        self.tab_clientes_btn,
-                        self.tab_proveedores_btn
+                        ft.Row(
+                            spacing=10,
+                            controls=[
+                                self.tab_clientes_btn,
+                                self.tab_proveedores_btn,
+                            ]
+                        ),
+                        self.results_count_badge,
                     ]
+                ),
+
+                create_card(
+                    padding=10,
+                    content=ft.Row(
+                        spacing=8,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        controls=[
+                            self.search_field,
+                            ft.IconButton(
+                                icon=ft.Icons.CLEAR_ROUNDED,
+                                tooltip="Limpiar búsqueda",
+                                on_click=self._clear_search,
+                            ),
+                        ],
+                    ),
                 ),
 
                 # Tarjeta de Listado
@@ -91,6 +141,22 @@ class CarteraView(ft.Container):
 
         self.load_data()
 
+    def _on_search_change(self, e: ft.ControlEvent) -> None:
+        query = e.control.value or ""
+        if self.current_tab == "CLIENTES":
+            self.customer_search_query = query
+        else:
+            self.supplier_search_query = query
+        self.load_data()
+
+    def _clear_search(self, _=None) -> None:
+        self.search_field.value = ""
+        if self.current_tab == "CLIENTES":
+            self.customer_search_query = ""
+        else:
+            self.supplier_search_query = ""
+        self.load_data()
+
     def _switch_tab(self, tab: str) -> None:
         self.current_tab = tab
         if tab == "CLIENTES":
@@ -98,14 +164,18 @@ class CarteraView(ft.Container):
             self.tab_clientes_btn.style.color = PastelTheme.TEXT_ON_PRIMARY
             self.tab_proveedores_btn.style.bgcolor = None
             self.tab_proveedores_btn.style.color = PastelTheme.TEXT_PRIMARY
+            self.search_field.hint_text = "Buscar cliente por nombre, documento (Cédula/NIT), teléfono, correo o dirección..."
+            self.search_field.value = self.customer_search_query
         else:
             self.tab_proveedores_btn.style.bgcolor = PastelTheme.PRIMARY
             self.tab_proveedores_btn.style.color = PastelTheme.TEXT_ON_PRIMARY
             self.tab_clientes_btn.style.bgcolor = None
             self.tab_clientes_btn.style.color = PastelTheme.TEXT_PRIMARY
+            self.search_field.hint_text = "Buscar proveedor por razón social, contacto, teléfono, correo o condiciones..."
+            self.search_field.value = self.supplier_search_query
 
         self.load_data()
-        self.update()
+        safe_update(self)
 
     def load_data(self) -> None:
         if self.current_tab == "CLIENTES":
@@ -116,7 +186,10 @@ class CarteraView(ft.Container):
         safe_update(self)
 
     def _render_customers(self) -> None:
-        customers = self.controller.get_all_customers()
+        query = (self.customer_search_query or "").strip()
+        customers = self.controller.get_all_customers(search_query=query)
+        count = len(customers)
+        self.results_count_text.value = f"{count} cliente{'s' if count != 1 else ''}" + (f" encontrado{'s' if count != 1 else ''}" if query else "")
         items = []
         for c in customers:
             has_debt = c["current_debt"] > 0
@@ -183,11 +256,25 @@ class CarteraView(ft.Container):
             items.append(card)
 
         if not items:
-            items.append(ft.Container(padding=30, alignment=ft.Alignment.CENTER, content=ft.Text("No hay clientes registrados.")))
+            empty_msg = (
+                f"No se encontraron clientes que coincidan con '{query}'."
+                if query
+                else "No hay clientes registrados."
+            )
+            items.append(
+                ft.Container(
+                    padding=30,
+                    alignment=ft.Alignment.CENTER,
+                    content=ft.Text(empty_msg, color=PastelTheme.TEXT_MUTED),
+                )
+            )
         self.list_column.controls = items
 
     def _render_suppliers(self) -> None:
-        suppliers = self.controller.get_all_suppliers()
+        query = (self.supplier_search_query or "").strip()
+        suppliers = self.controller.get_all_suppliers(search_query=query)
+        count = len(suppliers)
+        self.results_count_text.value = f"{count} proveedor{'es' if count != 1 else ''}" + (f" encontrado{'s' if count != 1 else ''}" if query else "")
         items = []
         for s in suppliers:
             addr_part = f" | Dir: {s['address']}" if s.get("address") else ""
@@ -230,7 +317,18 @@ class CarteraView(ft.Container):
             items.append(card)
 
         if not items:
-            items.append(ft.Container(padding=30, alignment=ft.Alignment.CENTER, content=ft.Text("No hay proveedores registrados.")))
+            empty_msg = (
+                f"No se encontraron proveedores que coincidan con '{query}'."
+                if query
+                else "No hay proveedores registrados."
+            )
+            items.append(
+                ft.Container(
+                    padding=30,
+                    alignment=ft.Alignment.CENTER,
+                    content=ft.Text(empty_msg, color=PastelTheme.TEXT_MUTED),
+                )
+            )
         self.list_column.controls = items
 
     def _open_create_modal(self) -> None:

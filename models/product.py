@@ -4,6 +4,10 @@ from sqlalchemy import String, Integer, Float, Text, Boolean, DateTime
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from models.base import Base
 
+WILDCARD_PRODUCT_BARCODE = "COMODIN-VENTA-LIBRE"
+WILDCARD_PRODUCT_NAME = "Comodín / Venta Libre"
+
+
 class Product(Base):
     """
     Modelo de Producto para el Módulo de Inventario.
@@ -25,6 +29,7 @@ class Product(Base):
     # Stock y Alertas
     stock: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     min_stock: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
+    stock_infinito: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     category: Mapped[Optional[str]] = mapped_column(String(100), default="General", index=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
 
@@ -67,16 +72,25 @@ class Product(Base):
     @property
     def total_cost_value(self) -> float:
         """Valoración total en costo de compra del inventario actual de este producto."""
+        if self.stock_infinito:
+            return 0.0
         return round(self.cost_price * self.stock, 2)
 
     @property
     def total_retail_value(self) -> float:
         """Valoración total en precio de venta del inventario actual."""
+        if self.stock_infinito:
+            return 0.0
         return round(self.sale_price * self.stock, 2)
 
     @property
     def is_low_stock(self) -> bool:
-        """Indica si el stock actual está en o por debajo del umbral mínimo de alerta."""
+        """
+        Indica si el stock actual está en o por debajo del umbral mínimo de alerta.
+        Los productos con stock_infinito NUNCA disparan alertas de stock bajo.
+        """
+        if self.stock_infinito:
+            return False
         return self.stock <= self.min_stock
 
     @property
@@ -100,6 +114,7 @@ class Product(Base):
             "sale_price": self.sale_price,
             "stock": self.stock,
             "min_stock": self.min_stock,
+            "stock_infinito": bool(self.stock_infinito),
             "category": self.category,
             "unit_profit": self.unit_profit,
             "profit_margin_percent": self.profit_margin_percent,

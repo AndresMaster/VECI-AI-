@@ -1,6 +1,6 @@
 from models.base import Base
 from models.user import AuthBase, User
-from models.product import Product
+from models.product import Product, WILDCARD_PRODUCT_BARCODE, WILDCARD_PRODUCT_NAME
 from models.customer import Customer
 from models.supplier import Supplier, SupplierPurchase, CompraProveedor
 from models.invoice import Invoice, InvoiceItem, InvoicePayment
@@ -12,6 +12,8 @@ __all__ = [
     "AuthBase",
     "User",
     "Product",
+    "WILDCARD_PRODUCT_BARCODE",
+    "WILDCARD_PRODUCT_NAME",
     "Customer",
     "Supplier",
     "SupplierPurchase",

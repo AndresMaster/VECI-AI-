@@ -352,7 +352,7 @@ class PosView(ft.Container):
                 # Tarjeta de Vista Previa de Cámara (Visible en modo Cámara)
                 self.camera_preview_card,
 
-                # Barra de escaneo rápido y búsqueda manual predictiva (Autocomplete)
+                # Barra de escaneo rápido, búsqueda manual predictiva (Autocomplete) y botón "Venta Libre"
                 create_card(
                     content=ft.Column(
                         spacing=8,
@@ -368,6 +368,23 @@ class PosView(ft.Container):
                                             shape=ft.RoundedRectangleBorder(radius=PastelTheme.BORDER_RADIUS_BUTTON),
                                         ),
                                         on_click=lambda _: self._on_barcode_submit()
+                                    ),
+                                    ft.FilledButton(
+                                        content=ft.Row(
+                                            spacing=6,
+                                            tight=True,
+                                            controls=[
+                                                ft.Icon(ft.Icons.BOLT_ROUNDED, size=18),
+                                                ft.Text("Venta Libre", weight=ft.FontWeight.BOLD),
+                                            ],
+                                        ),
+                                        style=ft.ButtonStyle(
+                                            bgcolor=PastelTheme.ACCENT_AMBER,
+                                            color=PastelTheme.SURFACE_WHITE,
+                                            shape=ft.RoundedRectangleBorder(radius=PastelTheme.BORDER_RADIUS_BUTTON),
+                                        ),
+                                        tooltip="Vender artículo no registrado o esporádico definiendo precio al vuelo (Comodín)",
+                                        on_click=lambda _: self._open_wildcard_sale_modal(),
                                     ),
                                     ft.TextButton(
                                         "Simular Escaneo (7701001001)",
@@ -599,8 +616,10 @@ class PosView(ft.Container):
                 name_str = prod.get("name", "")
                 pres_str = (prod.get("presentacion") or "").strip()
                 concatenated_label = f"{name_str} - {pres_str}" if pres_str else name_str
+                is_infinite = bool(prod.get("stock_infinito", False))
                 stock_qty = prod.get("stock", 0)
-                stock_color = PastelTheme.ACCENT_MINT if stock_qty > 0 else PastelTheme.ACCENT_CORAL
+                stock_label = "∞ (Infinito)" if is_infinite else str(stock_qty)
+                stock_color = PastelTheme.ACCENT_MINT if (is_infinite or stock_qty > 0) else PastelTheme.ACCENT_CORAL
 
                 tile = ft.Container(
                     bgcolor=PastelTheme.PRIMARY_PASTEL if is_single_match else PastelTheme.SURFACE_VARIANT,
@@ -627,9 +646,9 @@ class PosView(ft.Container):
                                                 color=PastelTheme.PRIMARY if is_single_match else PastelTheme.TEXT_PRIMARY,
                                             ),
                                             ft.Text(
-                                                f"Código: {prod.get('barcode', '')}  •  Stock disp.: {stock_qty}",
+                                                f"Código: {prod.get('barcode', '')}  •  Stock disp.: {stock_label}",
                                                 size=11,
-                                                color=stock_color if stock_qty <= 0 else PastelTheme.TEXT_SECONDARY,
+                                                color=stock_color if (not is_infinite and stock_qty <= 0) else PastelTheme.TEXT_SECONDARY,
                                             ),
                                         ],
                                     ),
@@ -737,6 +756,210 @@ class PosView(ft.Container):
                 self.scan_feedback_banner.color = PastelTheme.ACCENT_MINT
                 self.scan_feedback_banner.visible = True
                 safe_update(self.scan_feedback_banner)
+
+    # ================= MODAL DE "VENTA LIBRE" (COMODÍN / OPEN RING) =================
+
+    def _open_wildcard_sale_modal(self) -> None:
+        """
+        Abre el Modal de 'Venta Libre' (Comodín) para vender artículos no registrados
+        o esporádicos definiendo su precio al vuelo:
+        1. Descripción (Opcional, por defecto 'Artículo Venta Libre').
+        2. Precio de Venta (Requerido, numérico).
+        3. Costo Unitario (Opcional, numérico; si queda vacío calcula automáticamente Costo = Precio de Venta / 1.2).
+        """
+        desc_tf = ft.TextField(
+            label="Descripción (Opcional)",
+            value="Artículo Venta Libre",
+            hint_text="Ej: Artículo Venta Libre, Empanada, Bolsa de hielo...",
+            prefix_icon=ft.Icons.LABEL_OUTLINE_ROUNDED,
+            border_radius=8,
+            dense=True,
+        )
+        sale_tf = ft.TextField(
+            label="Precio de Venta ($) *",
+            hint_text="Ej: 3000",
+            prefix=ft.Text("$", size=12, color=PastelTheme.TEXT_SECONDARY),
+            keyboard_type=ft.KeyboardType.NUMBER,
+            border_radius=8,
+            border_color=PastelTheme.PRIMARY,
+            autofocus=True,
+            dense=True,
+        )
+        cost_tf = ft.TextField(
+            label="Costo Unitario ($) (Opcional)",
+            hint_text="Vacío = Precio de Venta ÷ 1.2 automático",
+            prefix=ft.Text("$", size=12, color=PastelTheme.TEXT_SECONDARY),
+            keyboard_type=ft.KeyboardType.NUMBER,
+            border_radius=8,
+            dense=True,
+        )
+
+        calc_preview_text = ft.Text(
+            "Si el Costo Unitario se deja vacío, se calculará automáticamente: Costo = Precio de Venta ÷ 1.2",
+            size=12,
+            weight=ft.FontWeight.W_600,
+            color=PastelTheme.TEXT_SECONDARY,
+        )
+        error_text = ft.Text("", size=12, color=PastelTheme.ACCENT_CORAL, visible=False)
+
+        def update_wildcard_preview(_=None) -> None:
+            raw_sale = (sale_tf.value or "").strip().replace("$", "").replace(",", "").replace(" ", "")
+            raw_cost = (cost_tf.value or "").strip().replace("$", "").replace(",", "").replace(" ", "")
+            try:
+                s_val = float(raw_sale) if raw_sale else 0.0
+            except ValueError:
+                calc_preview_text.value = "Ingrese un Precio de Venta numérico válido."
+                calc_preview_text.color = PastelTheme.ACCENT_CORAL
+                safe_update(calc_preview_text)
+                return
+
+            if s_val <= 0:
+                calc_preview_text.value = (
+                    "Si el Costo Unitario se deja vacío, se calculará automáticamente: Costo = Precio de Venta ÷ 1.2"
+                )
+                calc_preview_text.color = PastelTheme.TEXT_SECONDARY
+                safe_update(calc_preview_text)
+                return
+
+            if raw_cost:
+                try:
+                    c_val = float(raw_cost)
+                    mode_lbl = "Costo manual"
+                except ValueError:
+                    calc_preview_text.value = "Ingrese un Costo Unitario numérico válido o déjelo vacío."
+                    calc_preview_text.color = PastelTheme.ACCENT_CORAL
+                    safe_update(calc_preview_text)
+                    return
+            else:
+                c_val = round(s_val / 1.2, 2)
+                mode_lbl = "Costo auto (÷ 1.2)"
+
+            profit = round(s_val - c_val, 2)
+            calc_preview_text.value = (
+                f"{mode_lbl}: ${c_val:,.2f}  •  Utilidad estimada: ${profit:,.2f}"
+            )
+            calc_preview_text.color = PastelTheme.ACCENT_MINT if profit >= 0 else PastelTheme.ACCENT_CORAL
+            safe_update(calc_preview_text)
+
+        sale_tf.on_change = update_wildcard_preview
+        cost_tf.on_change = update_wildcard_preview
+
+        def confirm_wildcard_sale(_=None) -> None:
+            raw_sale = (sale_tf.value or "").strip().replace("$", "").replace(",", "").replace(" ", "")
+            raw_cost = (cost_tf.value or "").strip().replace("$", "").replace(",", "").replace(" ", "")
+
+            if not raw_sale:
+                error_text.value = "El Precio de Venta es obligatorio."
+                error_text.visible = True
+                safe_update(error_text)
+                return
+
+            try:
+                s_val = float(raw_sale)
+            except ValueError:
+                error_text.value = "El Precio de Venta debe ser un número válido."
+                error_text.visible = True
+                safe_update(error_text)
+                return
+
+            if s_val <= 0:
+                error_text.value = "El Precio de Venta debe ser mayor a $0."
+                error_text.visible = True
+                safe_update(error_text)
+                return
+
+            c_val: Optional[float] = None
+            if raw_cost:
+                try:
+                    c_val = float(raw_cost)
+                except ValueError:
+                    error_text.value = "El Costo Unitario debe ser un número válido o dejarse vacío."
+                    error_text.visible = True
+                    safe_update(error_text)
+                    return
+                if c_val < 0:
+                    error_text.value = "El Costo Unitario no puede ser negativo."
+                    error_text.visible = True
+                    safe_update(error_text)
+                    return
+
+            ok, msg, added_item = self.pos.add_wildcard_item_to_invoice(
+                description=desc_tf.value or "Artículo Venta Libre",
+                sale_price=s_val,
+                unit_cost=c_val,
+                quantity=1,
+            )
+            if not ok:
+                error_text.value = msg
+                error_text.visible = True
+                safe_update(error_text)
+                return
+
+            self.page.pop_dialog()
+            self.scan_feedback_banner.value = f"⚡ {msg}"
+            self.scan_feedback_banner.color = PastelTheme.ACCENT_MINT
+            self.scan_feedback_banner.visible = True
+            safe_update(self.scan_feedback_banner)
+
+        sale_tf.on_submit = confirm_wildcard_sale
+        cost_tf.on_submit = confirm_wildcard_sale
+        desc_tf.on_submit = confirm_wildcard_sale
+
+        wildcard_dialog = ft.AlertDialog(
+            shape=ft.RoundedRectangleBorder(radius=16),
+            title=ft.Row(
+                spacing=8,
+                controls=[
+                    ft.Icon(ft.Icons.BOLT_ROUNDED, color=PastelTheme.ACCENT_AMBER, size=24),
+                    ft.Text("Venta Libre / Artículo Comodín", weight=ft.FontWeight.BOLD, size=18),
+                ],
+            ),
+            content=ft.Container(
+                width=460,
+                content=ft.Column(
+                    tight=True,
+                    spacing=12,
+                    horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
+                    controls=[
+                        ft.Text(
+                            "Registra una venta rápida de un artículo esporádico o no inventariado sin ensuciar tu catálogo.",
+                            size=12,
+                            color=PastelTheme.TEXT_SECONDARY,
+                        ),
+                        desc_tf,
+                        sale_tf,
+                        cost_tf,
+                        ft.Container(
+                            bgcolor=PastelTheme.MINT_PASTEL,
+                            padding=ft.Padding.symmetric(horizontal=12, vertical=10),
+                            border_radius=8,
+                            content=calc_preview_text,
+                        ),
+                        error_text,
+                    ],
+                ),
+            ),
+            actions=[
+                ft.TextButton("Cancelar", on_click=lambda _: self.page.pop_dialog()),
+                ft.FilledButton(
+                    content=ft.Row(
+                        spacing=6,
+                        tight=True,
+                        controls=[
+                            ft.Icon(ft.Icons.ADD_SHOPPING_CART_ROUNDED, size=16),
+                            ft.Text("Agregar a Factura", weight=ft.FontWeight.BOLD),
+                        ],
+                    ),
+                    style=ft.ButtonStyle(
+                        bgcolor=PastelTheme.PRIMARY,
+                        color=PastelTheme.TEXT_ON_PRIMARY,
+                        shape=ft.RoundedRectangleBorder(radius=8),
+                    ),
+                    on_click=confirm_wildcard_sale,
+                ),
+            ],
+        )
+        self.page.show_dialog(wildcard_dialog)
 
     # ================= PESTAÑAS DE FACTURACIÓN MÚLTIPLE Y CALCULADORA DE CAMBIO =================
 
@@ -899,7 +1122,7 @@ class PosView(ft.Container):
         item = self.pos.items.get(barcode)
         if not item:
             return
-        if new_qty > item.max_stock:
+        if (not item.stock_infinito) and new_qty > item.max_stock:
             self.scan_feedback_banner.value = f"⚠ Stock máximo disponible para '{item.display_name}': {item.max_stock} uds."
             self.scan_feedback_banner.color = PastelTheme.ACCENT_CORAL
             self.scan_feedback_banner.visible = True
@@ -931,7 +1154,7 @@ class PosView(ft.Container):
             self.pos.remove_item(barcode)
             return
 
-        if new_qty > item.max_stock:
+        if (not item.stock_infinito) and new_qty > item.max_stock:
             self.pos.update_quantity(barcode, item.max_stock, notify=True)
             self.scan_feedback_banner.value = (
                 f"⚠ Cantidad ajustada al stock máximo disponible ({item.max_stock} uds) para '{item.display_name}'."
@@ -1069,13 +1292,20 @@ class PosView(ft.Container):
                 bgcolor=PastelTheme.SURFACE_VARIANT,
                 border_color=PastelTheme.BORDER_LIGHT,
                 focused_border_color=PastelTheme.PRIMARY,
-                tooltip=f"Escriba la cantidad directamente (Stock máx: {item.max_stock})",
+                tooltip=(
+                    "Escriba la cantidad directamente (Stock infinito: ∞)"
+                    if item.stock_infinito
+                    else f"Escriba la cantidad directamente (Stock máx: {item.max_stock})"
+                ),
                 on_change=lambda e, b=item.barcode, lbl=subtotal_label: self._on_item_qty_live_change(
                     b, e.control.value, lbl
                 ),
                 on_submit=lambda e, b=item.barcode: self._commit_item_quantity(b, e.control.value),
                 on_blur=lambda e, b=item.barcode: self._commit_item_quantity(b, e.control.value),
             )
+
+            disp_text = "∞" if item.stock_infinito else f"{item.max_stock} uds"
+            code_label = "Venta Libre" if item.is_wildcard else item.barcode
 
             row = ft.Container(
                 bgcolor=PastelTheme.SURFACE_WHITE,
@@ -1103,6 +1333,17 @@ class PosView(ft.Container):
                                         *(
                                             [
                                                 create_badge(
+                                                    "⚡ Venta Libre",
+                                                    PastelTheme.AMBER_PASTEL,
+                                                    PastelTheme.ACCENT_AMBER,
+                                                )
+                                            ]
+                                            if item.is_wildcard
+                                            else []
+                                        ),
+                                        *(
+                                            [
+                                                create_badge(
                                                     f"Promo (Orig: ${item.original_sale_price:,.0f})",
                                                     PastelTheme.AMBER_PASTEL,
                                                     PastelTheme.ACCENT_AMBER,
@@ -1114,7 +1355,7 @@ class PosView(ft.Container):
                                     ],
                                 ),
                                 ft.Text(
-                                    f"Código: {item.barcode}  •  Disp: {item.max_stock} uds",
+                                    f"Código: {code_label}  •  Disp: {disp_text}",
                                     size=11,
                                     color=PastelTheme.TEXT_MUTED,
                                 ),

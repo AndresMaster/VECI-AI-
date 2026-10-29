@@ -339,12 +339,14 @@ class InOutView(ft.Container):
 
         rows = []
         for p in products:
-            is_low = p["is_low_stock"]
-            stock_badge = (
-                create_badge(f"{p['stock']} uds (Bajo)", PastelTheme.CORAL_PASTEL, PastelTheme.ACCENT_CORAL)
-                if is_low
-                else create_badge(f"{p['stock']} uds", PastelTheme.MINT_PASTEL, PastelTheme.ACCENT_MINT)
-            )
+            is_infinite = bool(p.get("stock_infinito", False))
+            is_low = False if is_infinite else bool(p.get("is_low_stock", False))
+            if is_infinite:
+                stock_badge = create_badge("∞", PastelTheme.SKY_PASTEL, PastelTheme.ACCENT_SKY)
+            elif is_low:
+                stock_badge = create_badge(f"{p['stock']} uds (Bajo)", PastelTheme.CORAL_PASTEL, PastelTheme.ACCENT_CORAL)
+            else:
+                stock_badge = create_badge(f"{p['stock']} uds", PastelTheme.MINT_PASTEL, PastelTheme.ACCENT_MINT)
 
             row = ft.Container(
                 padding=ft.Padding.symmetric(horizontal=16, vertical=10),

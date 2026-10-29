@@ -5,8 +5,15 @@ from datetime import datetime
 from typing import Dict, List, Optional, Callable, Any
 from sqlalchemy import or_, select, case
 
-from database import get_db_session
-from models import Product, Customer, Invoice, InvoiceItem
+from database import get_db_session, ensure_wildcard_product
+from models import (
+    Product,
+    WILDCARD_PRODUCT_BARCODE,
+    WILDCARD_PRODUCT_NAME,
+    Customer,
+    Invoice,
+    InvoiceItem,
+)
 
 @dataclass
 class CartItem:
@@ -20,6 +27,8 @@ class CartItem:
     max_stock: int = 0
     presentacion: str = ""
     original_sale_price: float = 0.0
+    stock_infinito: bool = False
+    is_wildcard: bool = False
 
     def __post_init__(self) -> None:
         if self.original_sale_price <= 0:
@@ -98,6 +107,7 @@ class PosController:
 
         # Sistema de Facturación Múltiple (Pestañas / Sesiones concurrentes)
         self._next_tab_number: int = 1
+        self._wildcard_seq: int = 1
         self.tabs: List[PosTabSession] = []
         self.active_tab_id: int = 0
         self.create_new_tab(notify=False)
@@ -295,6 +305,7 @@ class PosController:
                 session.query(Product)
                 .filter(
                     Product.is_active == True,
+                    Product.barcode != WILDCARD_PRODUCT_BARCODE,
                     or_(
                         Product.name.ilike(like_pattern),
                         Product.presentacion.ilike(like_pattern),
@@ -312,6 +323,84 @@ class PosController:
             return [p.to_dict() for p in matches]
 
     # ================= GESTIÓN DEL CARRITO (BORRADOR) =================
+
+    def add_wildcard_item_to_invoice(
+        self,
+        description: str = "",
+        sale_price: float = 0.0,
+        unit_cost: Optional[float] = None,
+        quantity: int = 1,
+    ) -> tuple[bool, str, Optional[CartItem]]:
+        """
+        Agrega un artículo de 'Venta Libre' (Comodín / Open Ring) al borrador activo:
+        1. Descripción opcional (por defecto 'Artículo Venta Libre').
+        2. Precio de Venta requerido (> 0).
+        3. Costo Unitario opcional: si es None, aplica la regla matemática de fallback
+           Costo = Precio de Venta / 1.2; si el usuario digitó el costo manualmente, lo respeta.
+        4. Usa el único Producto de sistema 'Comodín / Venta Libre' (stock_infinito = True)
+           en la base de datos y sobrescribe nombre, precio y costo en la línea del carrito/factura.
+        """
+        clean_desc = (description or "").strip() or "Artículo Venta Libre"
+        try:
+            s_price = round(float(sale_price), 2)
+        except (TypeError, ValueError):
+            return False, "El Precio de Venta debe ser un valor numérico válido.", None
+
+        if s_price <= 0:
+            return False, "El Precio de Venta debe ser mayor a $0.", None
+
+        if unit_cost is None:
+            final_cost = round(s_price / 1.2, 2)
+        else:
+            try:
+                final_cost = round(float(unit_cost), 2)
+            except (TypeError, ValueError):
+                return False, "El Costo Unitario debe ser un valor numérico válido.", None
+            if final_cost < 0:
+                return False, "El Costo Unitario no puede ser negativo.", None
+
+        qty = max(1, int(quantity or 1))
+        wildcard_prod = ensure_wildcard_product()
+
+        # Si ya existe en el carrito activo una línea Venta Libre con igual descripción, precio y costo, sumar cantidad
+        for existing_item in self.items.values():
+            if (
+                existing_item.is_wildcard
+                and existing_item.name == clean_desc
+                and abs(existing_item.sale_price - s_price) < 0.01
+                and abs(existing_item.cost_price - final_cost) < 0.01
+            ):
+                existing_item.quantity += qty
+                self._notify_change()
+                return (
+                    True,
+                    f"Venta Libre agregada: {clean_desc} (${s_price:,.0f} | Costo: ${final_cost:,.0f})",
+                    existing_item,
+                )
+
+        cart_key = f"{WILDCARD_PRODUCT_BARCODE}-{self._wildcard_seq}"
+        self._wildcard_seq += 1
+
+        new_item = CartItem(
+            product_id=wildcard_prod.id,
+            barcode=cart_key,
+            name=clean_desc,
+            presentacion="",
+            cost_price=final_cost,
+            sale_price=s_price,
+            original_sale_price=s_price,
+            quantity=qty,
+            max_stock=0,
+            stock_infinito=True,
+            is_wildcard=True,
+        )
+        self.items[cart_key] = new_item
+        self._notify_change()
+        return (
+            True,
+            f"Venta Libre agregada: {clean_desc} (${s_price:,.0f} | Costo: ${final_cost:,.0f})",
+            new_item,
+        )
 
     def add_item_to_invoice(
         self,
@@ -358,12 +447,14 @@ class PosController:
             if not product:
                 return False, "Producto no encontrado. Regístrelo en el módulo de Inventario."
 
+            is_infinite = bool(product.stock_infinito)
             current_qty = self.items[code].quantity if code in self.items else 0
-            if current_qty + quantity > product.stock:
+            if (not is_infinite) and (current_qty + quantity > product.stock):
                 return False, f"Stock insuficiente para '{product.display_name}'. Disponible: {product.stock}"
 
             if code in self.items:
                 self.items[code].max_stock = product.stock
+                self.items[code].stock_infinito = is_infinite
                 self.items[code].quantity += quantity
             else:
                 self.items[code] = CartItem(
@@ -375,7 +466,8 @@ class PosController:
                     sale_price=product.sale_price,
                     original_sale_price=product.sale_price,
                     quantity=quantity,
-                    max_stock=product.stock
+                    max_stock=product.stock,
+                    stock_infinito=is_infinite,
                 )
 
         if apply_cooldown:
@@ -398,8 +490,9 @@ class PosController:
             prod = session.query(Product).filter_by(id=item.product_id).first()
             if prod is not None:
                 item.max_stock = int(prod.stock or 0)
+                item.stock_infinito = bool(prod.stock_infinito)
 
-        if quantity > item.max_stock:
+        if (not item.stock_infinito) and quantity > item.max_stock:
             if notify:
                 self._notify_change()
             return False, f"No puedes superar el stock disponible ({item.max_stock} uds)."
@@ -504,23 +597,27 @@ class PosController:
             session.add(invoice)
             session.flush() # Obtiene invoice.id
 
-            # Descontar stock y registrar ítems históricos (usando item.sale_price en InvoiceItem sin tocar Product.sale_price)
+            # Descontar stock (solo si stock_infinito == False) y registrar ítems históricos
             for item in self.items.values():
                 product = session.query(Product).filter_by(id=item.product_id).with_for_update().first()
-                if not product or product.stock < item.quantity:
+                if not product:
                     session.rollback()
-                    return False, f"Stock insuficiente en bodega para '{item.name}'.", None
+                    return False, f"Producto '{item.name}' no encontrado en el inventario.", None
 
-                product.stock -= item.quantity
+                if not bool(product.stock_infinito):
+                    if product.stock < item.quantity:
+                        session.rollback()
+                        return False, f"Stock insuficiente en bodega para '{item.name}'.", None
+                    product.stock -= item.quantity
 
                 invoice_item = InvoiceItem(
                     invoice_id=invoice.id,
                     product_id=product.id,
-                    barcode=product.barcode,
-                    product_name=product.display_name, # Concatena nombre y presentación (ej. 'Chocoramo - 65g')
-                    presentacion=product.presentacion or "",
-                    unit_cost=product.cost_price,
-                    unit_price=item.sale_price,
+                    barcode=WILDCARD_PRODUCT_BARCODE if item.is_wildcard else product.barcode,
+                    product_name=item.display_name,  # Snapshot exacto: Descripción de Venta Libre o nombre con presentación
+                    presentacion="" if item.is_wildcard else (product.presentacion or ""),
+                    unit_cost=round(float(item.cost_price), 2),   # Snapshot exacto: Costo calculado/digitado en Venta Libre o costo de inventario
+                    unit_price=round(float(item.sale_price), 2),  # Snapshot exacto: Precio de venta definido en la factura
                     quantity=item.quantity,
                     subtotal=item.subtotal
                 )
@@ -621,7 +718,8 @@ class PosController:
                     errors.append(f"No se encontró producto con barcode='{barcode}' ni nombre='{name_query}'")
                     continue
 
-                if product.stock < qty:
+                is_infinite = bool(product.stock_infinito)
+                if (not is_infinite) and product.stock < qty:
                     errors.append(f"Stock insuficiente para '{product.name}'. Solicitado: {qty}, Stock: {product.stock}")
                     continue
 
@@ -634,7 +732,8 @@ class PosController:
                     cost_price=product.cost_price,
                     sale_price=product.sale_price,
                     quantity=qty,
-                    max_stock=product.stock
+                    max_stock=product.stock,
+                    stock_infinito=is_infinite,
                 )
                 processed_items.append({
                     "barcode": product.barcode,

@@ -3,7 +3,7 @@ from typing import List, Optional, Dict, Any
 from sqlalchemy import or_, func, case
 
 from database import get_db_session
-from models import Product
+from models import Product, WILDCARD_PRODUCT_BARCODE
 
 class InventoryController:
     """Controlador CRUD y de lógica de inventario con paginación SQL (LIMIT / OFFSET)."""
@@ -12,19 +12,30 @@ class InventoryController:
         """
         Calcula instantáneamente en SQLite (sin cargar objetos ORM en memoria)
         las métricas globales del inventario para las tarjetas KPI superiores.
+        Los productos con stock_infinito=True no suman unidades físicas ni costo de inventario.
         """
         with get_db_session() as session:
+            is_physical = (Product.stock_infinito == False) & (Product.stock > 0)
             row = (
                 session.query(
                     func.count(Product.id),
                     func.coalesce(
-                        func.sum(case((Product.stock > 0, Product.stock), else_=0)),
+                        func.sum(case((is_physical, Product.stock), else_=0)),
                         0,
                     ),
-                    func.coalesce(func.sum(Product.cost_price * Product.stock), 0.0),
-                    func.coalesce(func.sum(Product.sale_price * Product.stock), 0.0),
+                    func.coalesce(
+                        func.sum(case((is_physical, Product.cost_price * Product.stock), else_=0.0)),
+                        0.0,
+                    ),
+                    func.coalesce(
+                        func.sum(case((is_physical, Product.sale_price * Product.stock), else_=0.0)),
+                        0.0,
+                    ),
                 )
-                .filter(Product.is_active == True)
+                .filter(
+                    Product.is_active == True,
+                    Product.barcode != WILDCARD_PRODUCT_BARCODE,
+                )
                 .first()
             )
             total_by_name = int(row[0] or 0) if row else 0
@@ -53,7 +64,10 @@ class InventoryController:
         requested_page = max(1, int(page or 1))
 
         with get_db_session() as session:
-            base_query = session.query(Product).filter(Product.is_active == True)
+            base_query = session.query(Product).filter(
+                Product.is_active == True,
+                Product.barcode != WILDCARD_PRODUCT_BARCODE,
+            )
             if search_query and search_query.strip():
                 term = f"%{search_query.strip()}%"
                 base_query = base_query.filter(
@@ -80,16 +94,23 @@ class InventoryController:
             items = [p.to_dict() for p in products]
 
             # Resumen global mediante agregación SQL directa
+            is_physical = (Product.stock_infinito == False) & (Product.stock > 0)
             summary_row = (
                 session.query(
                     func.count(Product.id),
                     func.coalesce(
-                        func.sum(case((Product.stock > 0, Product.stock), else_=0)),
+                        func.sum(case((is_physical, Product.stock), else_=0)),
                         0,
                     ),
-                    func.coalesce(func.sum(Product.cost_price * Product.stock), 0.0),
+                    func.coalesce(
+                        func.sum(case((is_physical, Product.cost_price * Product.stock), else_=0.0)),
+                        0.0,
+                    ),
                 )
-                .filter(Product.is_active == True)
+                .filter(
+                    Product.is_active == True,
+                    Product.barcode != WILDCARD_PRODUCT_BARCODE,
+                )
                 .first()
             )
             total_by_name = int(summary_row[0] or 0) if summary_row else 0
@@ -115,7 +136,10 @@ class InventoryController:
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
         with get_db_session() as session:
-            query = session.query(Product).filter(Product.is_active == True)
+            query = session.query(Product).filter(
+                Product.is_active == True,
+                Product.barcode != WILDCARD_PRODUCT_BARCODE,
+            )
             if search_query.strip():
                 term = f"%{search_query.strip()}%"
                 query = query.filter(
@@ -155,15 +179,17 @@ class InventoryController:
         brand: str = "",
         presentacion: str = "",
         description: str = "",
-        category: str = "General"
+        category: str = "General",
+        stock_infinito: bool = False,
     ) -> tuple[bool, str, Optional[Dict[str, Any]]]:
         barcode = barcode.strip()
         name = name.strip()
+        is_inf = bool(stock_infinito)
 
         if not barcode or not name:
             return False, "Código de barras y nombre son obligatorios.", None
 
-        if cost_price < 0 or sale_price < 0 or stock < 0:
+        if cost_price < 0 or sale_price < 0 or (not is_inf and stock < 0):
             return False, "Los precios y el stock no pueden ser negativos.", None
 
         with get_db_session() as session:
@@ -179,8 +205,9 @@ class InventoryController:
                 description=description.strip() if description else None,
                 cost_price=float(cost_price),
                 sale_price=float(sale_price),
-                stock=int(stock),
-                min_stock=int(min_stock),
+                stock=0 if is_inf else int(stock),
+                min_stock=0 if is_inf else int(min_stock),
+                stock_infinito=is_inf,
                 category=category.strip() if category else "General"
             )
             session.add(new_prod)
@@ -200,8 +227,10 @@ class InventoryController:
         brand: str = "",
         presentacion: str = "",
         description: str = "",
-        category: str = "General"
+        category: str = "General",
+        stock_infinito: bool = False,
     ) -> tuple[bool, str, Optional[Dict[str, Any]]]:
+        is_inf = bool(stock_infinito)
         with get_db_session() as session:
             product = session.query(Product).filter_by(id=product_id).first()
             if not product:
@@ -221,8 +250,13 @@ class InventoryController:
             product.presentacion = presentacion.strip() if presentacion else ""
             product.cost_price = float(cost_price)
             product.sale_price = float(sale_price)
-            product.stock = int(stock)
-            product.min_stock = int(min_stock)
+            product.stock_infinito = is_inf
+            if is_inf:
+                product.stock = 0
+                product.min_stock = 0
+            else:
+                product.stock = int(stock)
+                product.min_stock = int(min_stock)
             product.description = description.strip() if description else None
             product.category = category.strip() if category else "General"
 
@@ -247,6 +281,13 @@ class InventoryController:
             product = session.query(Product).filter_by(id=product_id, is_active=True).first()
             if not product:
                 return False, "Producto no encontrado en el inventario.", None
+
+            if bool(product.stock_infinito):
+                return (
+                    False,
+                    f"'{product.display_name}' tiene Stock Infinito (∞) activado y no requiere ajustes manuales de existencias.",
+                    None,
+                )
 
             previous_stock = int(product.stock or 0)
             new_stock = previous_stock + int(quantity_delta)
@@ -319,10 +360,11 @@ class InventoryController:
             return True, f"Producto '{product.name}' desactivado del inventario."
 
     def get_low_stock_products(self) -> List[Dict[str, Any]]:
-        """Retorna productos cuyo stock está en o por debajo del mínimo de alerta."""
+        """Retorna productos físicos (stock_infinito == False) cuyo stock está en o por debajo del mínimo de alerta."""
         with get_db_session() as session:
             low_stock = session.query(Product).filter(
                 Product.is_active == True,
+                Product.stock_infinito == False,
                 Product.stock <= Product.min_stock
             ).order_by(Product.stock.asc()).all()
             return [p.to_dict() for p in low_stock]

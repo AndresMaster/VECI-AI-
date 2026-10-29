@@ -8,6 +8,7 @@ from sqlalchemy.orm import joinedload
 from database import get_db_session
 from models import (
     Product,
+    WILDCARD_PRODUCT_BARCODE,
     Invoice,
     InvoiceItem,
     Supplier,
@@ -205,17 +206,28 @@ class DashboardController:
 
         with get_db_session() as session:
             # 1. Valoración de inventario mediante agregación SQL directa (sin instanciar 900+ objetos ORM)
+            # Los productos con stock_infinito=True no suman unidades físicas ni valoración de stock
+            is_physical = (Product.stock_infinito == False) & (Product.stock > 0)
             inv_agg = (
                 session.query(
                     func.count(Product.id),
-                    func.coalesce(func.sum(Product.cost_price * Product.stock), 0.0),
-                    func.coalesce(func.sum(Product.sale_price * Product.stock), 0.0),
                     func.coalesce(
-                        func.sum(case((Product.stock > 0, Product.stock), else_=0)),
+                        func.sum(case((is_physical, Product.cost_price * Product.stock), else_=0.0)),
+                        0.0,
+                    ),
+                    func.coalesce(
+                        func.sum(case((is_physical, Product.sale_price * Product.stock), else_=0.0)),
+                        0.0,
+                    ),
+                    func.coalesce(
+                        func.sum(case((is_physical, Product.stock), else_=0)),
                         0,
                     ),
                 )
-                .filter(Product.is_active == True)
+                .filter(
+                    Product.is_active == True,
+                    Product.barcode != WILDCARD_PRODUCT_BARCODE,
+                )
                 .first()
             )
             total_products_count = int(inv_agg[0] or 0) if inv_agg else 0
@@ -225,8 +237,10 @@ class DashboardController:
             total_potential_profit = total_inventory_retail - total_inventory_cost
 
             # 1.1 Alertas de Stock Bajo paginadas con LIMIT 50 OFFSET X en SQLite
+            # Excluye productos con stock_infinito == True
             low_stock_q = session.query(Product).filter(
                 Product.is_active == True,
+                Product.stock_infinito == False,
                 Product.stock <= Product.min_stock,
             )
             low_stock_count = int(low_stock_q.count() or 0)
@@ -792,7 +806,7 @@ class DashboardController:
                 if product is None and item.barcode:
                     product = session.query(Product).filter(Product.barcode == item.barcode).first()
 
-                if product is not None and qty > 0:
+                if product is not None and qty > 0 and not bool(product.stock_infinito):
                     product.stock = int(product.stock or 0) + qty
                     restored_units += qty
 
