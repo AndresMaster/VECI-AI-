@@ -13,6 +13,7 @@ from models import (
     Customer,
     Invoice,
     InvoiceItem,
+    RegistroAnulaciones,
 )
 
 @dataclass
@@ -551,6 +552,46 @@ class PosController:
 
     # ================= PROCESO DE CHECKOUT / FACTURACIÓN =================
 
+    @staticmethod
+    def _generate_unique_invoice_number(session, now_dt: datetime) -> str:
+        """
+        Genera un número consecutivo de factura único (INV-YYYYMMDD-XXXX) a prueba de colisiones
+        aun cuando se hayan eliminado/anulado facturas previas del mismo día.
+        """
+        date_prefix = now_dt.strftime("%Y%m%d")
+        prefix_str = f"INV-{date_prefix}-"
+        max_seq = 0
+
+        existing_numbers = (
+            session.query(Invoice.invoice_number)
+            .filter(Invoice.invoice_number.like(f"{prefix_str}%"))
+            .all()
+        )
+        for (inv_num,) in existing_numbers:
+            if inv_num and inv_num.startswith(prefix_str):
+                suffix = inv_num[len(prefix_str):].split()[0].strip()
+                if suffix.isdigit():
+                    max_seq = max(max_seq, int(suffix))
+
+        cancelled_numbers = (
+            session.query(RegistroAnulaciones.factura_id_original)
+            .filter(RegistroAnulaciones.factura_id_original.like(f"{prefix_str}%"))
+            .all()
+        )
+        for (orig_str,) in cancelled_numbers:
+            if orig_str and orig_str.startswith(prefix_str):
+                token = orig_str.split()[0].strip()
+                suffix = token[len(prefix_str):].strip()
+                if suffix.isdigit():
+                    max_seq = max(max_seq, int(suffix))
+
+        next_seq = max_seq + 1
+        candidate = f"{prefix_str}{next_seq:04d}"
+        while session.query(Invoice.id).filter(Invoice.invoice_number == candidate).first() is not None:
+            next_seq += 1
+            candidate = f"{prefix_str}{next_seq:04d}"
+        return candidate
+
     def checkout(self, created_via: str = "POS_DESKTOP") -> tuple[bool, str, Optional[Invoice]]:
         """
         Consolida el borrador activo en una Factura definitiva en la base de datos:
@@ -575,11 +616,9 @@ class PosController:
                 if not customer:
                     return False, f"Cliente ID {self.customer_id} no existe.", None
 
-            # Generar número consecutivo de factura y hora exacta de la transacción
+            # Generar número consecutivo único de factura (a prueba de colisiones tras anulaciones)
             now_dt = datetime.now()
-            date_prefix = now_dt.strftime("%Y%m%d")
-            count_today = session.query(Invoice).filter(Invoice.invoice_number.like(f"INV-{date_prefix}-%")).count()
-            invoice_num = f"INV-{date_prefix}-{(count_today + 1):04d}"
+            invoice_num = self._generate_unique_invoice_number(session, now_dt)
 
             invoice = Invoice(
                 invoice_number=invoice_num,

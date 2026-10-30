@@ -800,47 +800,157 @@ class CashFlowView(ft.Container):
         self.page.show_dialog(confirm_dialog)
 
     def show_audit_logs_modal(self) -> None:
-        """Muestra el historial inmutable de facturas anuladas/reversadas (RegistroAnulaciones)."""
+        """
+        Muestra el historial inmutable de facturas anuladas/reversadas (RegistroAnulaciones),
+        permitiendo visualizar el detalle completo de productos cargados en cada factura
+        y retornar/restaurar la factura nuevamente al Flujo de Caja.
+        """
         logs = self.controller.get_cancellation_audit_logs()
         items_controls = []
         for entry in logs:
+            audit_id = entry["id"]
+            is_restored = bool(entry.get("restaurada", False))
+            has_snapshot = bool(entry.get("has_snapshot", False))
+            snapshot_items = entry.get("items", []) or []
+
+            status_badge = (
+                create_badge("RESTAURADA EN CAJA", PastelTheme.MINT_PASTEL, PastelTheme.ACCENT_MINT)
+                if is_restored
+                else create_badge("ANULADA", PastelTheme.CORAL_PASTEL, PastelTheme.ACCENT_CORAL)
+            )
+
+            if snapshot_items:
+                preview_parts = []
+                for it in snapshot_items[:3]:
+                    p_name = it.get("display_name") or it.get("product_name") or "Producto"
+                    qty = it.get("quantity", 1)
+                    preview_parts.append(f"{qty}x {p_name}")
+                if len(snapshot_items) > 3:
+                    preview_parts.append(f"(+{len(snapshot_items) - 3} más)")
+                products_preview_str = "Productos: " + ", ".join(preview_parts)
+            else:
+                products_preview_str = (
+                    f"Factura histórica (${entry['monto_total']:,.2f}) — Disponible para restaurar a Flujo de Caja"
+                )
+
             items_controls.append(
                 ft.Container(
                     bgcolor=PastelTheme.SURFACE_VARIANT,
-                    border_radius=10,
-                    padding=12,
-                    border=ft.Border.all(1, PastelTheme.BORDER_LIGHT),
+                    border_radius=12,
+                    padding=14,
+                    border=ft.Border.all(
+                        1,
+                        PastelTheme.ACCENT_MINT if is_restored else PastelTheme.BORDER_LIGHT,
+                    ),
                     content=ft.Column(
-                        spacing=4,
+                        spacing=6,
                         tight=True,
                         controls=[
                             ft.Row(
                                 alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                                vertical_alignment=ft.CrossAxisAlignment.CENTER,
                                 controls=[
-                                    ft.Text(
-                                        f"Factura: {entry['factura_id_original']}",
-                                        size=13,
-                                        weight=ft.FontWeight.BOLD,
-                                        color=PastelTheme.TEXT_PRIMARY,
+                                    ft.Row(
+                                        spacing=8,
+                                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                                        controls=[
+                                            ft.Icon(
+                                                ft.Icons.RECEIPT_LONG_ROUNDED,
+                                                size=18,
+                                                color=PastelTheme.PRIMARY,
+                                            ),
+                                            ft.Text(
+                                                f"Factura: {entry['factura_id_original']}",
+                                                size=13,
+                                                weight=ft.FontWeight.BOLD,
+                                                color=PastelTheme.TEXT_PRIMARY,
+                                            ),
+                                            status_badge,
+                                        ],
                                     ),
                                     ft.Text(
                                         f"${entry['monto_total']:,.2f}",
-                                        size=13,
+                                        size=15,
                                         weight=ft.FontWeight.BOLD,
-                                        color=PastelTheme.ACCENT_CORAL,
+                                        color=PastelTheme.ACCENT_MINT if is_restored else PastelTheme.ACCENT_CORAL,
+                                    ),
+                                ],
+                            ),
+                            ft.Row(
+                                spacing=16,
+                                wrap=True,
+                                controls=[
+                                    ft.Text(
+                                        f"Fecha de anulación: {entry['fecha_anulacion']}",
+                                        size=11,
+                                        color=PastelTheme.TEXT_SECONDARY,
+                                    ),
+                                    *(
+                                        [
+                                            ft.Text(
+                                                f"Cliente: {entry['snapshot'].get('customer_name', 'Consumidor Final')}",
+                                                size=11,
+                                                weight=ft.FontWeight.W_600,
+                                                color=PastelTheme.TEXT_SECONDARY,
+                                            )
+                                        ]
+                                        if has_snapshot and isinstance(entry.get("snapshot"), dict)
+                                        else []
                                     ),
                                 ],
                             ),
                             ft.Text(
-                                f"Fecha de anulación: {entry['fecha_anulacion']}",
-                                size=11,
-                                color=PastelTheme.TEXT_SECONDARY,
-                            ),
-                            ft.Text(
-                                f"Motivo: {entry['motivo']}",
+                                f"Motivo de anulación: {entry['motivo']}",
                                 size=12,
                                 weight=ft.FontWeight.W_500,
                                 color=PastelTheme.TEXT_PRIMARY,
+                            ),
+                            ft.Container(
+                                bgcolor=PastelTheme.SURFACE_WHITE,
+                                border_radius=8,
+                                padding=ft.Padding.symmetric(horizontal=10, vertical=6),
+                                border=ft.Border.all(1, PastelTheme.BORDER_LIGHT),
+                                content=ft.Row(
+                                    spacing=6,
+                                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                                    controls=[
+                                        ft.Icon(
+                                            ft.Icons.SHOPPING_BAG_OUTLINED,
+                                            size=14,
+                                            color=PastelTheme.PRIMARY,
+                                        ),
+                                        ft.Text(
+                                            products_preview_str,
+                                            size=11,
+                                            color=PastelTheme.TEXT_SECONDARY,
+                                            expand=True,
+                                        ),
+                                    ],
+                                ),
+                            ),
+                            ft.Row(
+                                alignment=ft.MainAxisAlignment.END,
+                                spacing=8,
+                                controls=[
+                                    ft.OutlinedButton(
+                                        "Ver Detalle / Productos",
+                                        icon=ft.Icons.VISIBILITY_ROUNDED,
+                                        style=ft.ButtonStyle(
+                                            color=PastelTheme.PRIMARY,
+                                            side=ft.BorderSide(1, PastelTheme.PRIMARY),
+                                            padding=ft.Padding.symmetric(horizontal=12, vertical=6),
+                                        ),
+                                        on_click=lambda _, aid=audit_id: self._show_cancelled_invoice_detail_modal(aid),
+                                    ),
+                                    ft.FilledButton(
+                                        "Ya Restaurada en Caja" if is_restored else "Retornar a Flujo de Caja",
+                                        icon=ft.Icons.CHECK_CIRCLE_OUTLINE_ROUNDED if is_restored else ft.Icons.RESTORE_ROUNDED,
+                                        disabled=is_restored,
+                                        bgcolor=PastelTheme.ACCENT_MINT if not is_restored else PastelTheme.SURFACE_VARIANT,
+                                        color=PastelTheme.TEXT_ON_PRIMARY if not is_restored else PastelTheme.TEXT_MUTED,
+                                        on_click=lambda _, aid=audit_id: self._handle_restore_cancelled_invoice(aid),
+                                    ),
+                                ],
                             ),
                         ],
                     ),
@@ -865,14 +975,14 @@ class CashFlowView(ft.Container):
                 spacing=8,
                 controls=[
                     ft.Icon(ft.Icons.SHIELD_ROUNDED, color=PastelTheme.ACCENT_AMBER, size=24),
-                    ft.Text("Registro Inmutable de Anulaciones (AuditLog)", size=16, weight=ft.FontWeight.BOLD),
+                    ft.Text("Auditoría de Anulaciones y Recuperación de Facturas", size=16, weight=ft.FontWeight.BOLD),
                 ],
             ),
             content=ft.Container(
-                width=520,
-                height=360,
+                width=680,
+                height=440,
                 content=ft.Column(
-                    spacing=8,
+                    spacing=10,
                     scroll=ft.ScrollMode.AUTO,
                     controls=items_controls,
                 ),
@@ -887,6 +997,355 @@ class CashFlowView(ft.Container):
             ],
         )
         self.page.show_dialog(audit_dialog)
+
+    def _handle_restore_cancelled_invoice(self, audit_log_id: int) -> None:
+        """
+        Restaura una factura anulada de vuelta al Flujo de Caja y actualiza la vista.
+        """
+        self.page.pop_dialog()
+        success, msg, restored_data = self.controller.restore_cancelled_invoice(audit_log_id)
+
+        result_dialog = ft.AlertDialog(
+            title=ft.Row(
+                spacing=8,
+                controls=[
+                    ft.Icon(
+                        ft.Icons.CHECK_CIRCLE_ROUNDED if success else ft.Icons.ERROR_OUTLINE_ROUNDED,
+                        color=PastelTheme.ACCENT_MINT if success else PastelTheme.ACCENT_CORAL,
+                        size=24,
+                    ),
+                    ft.Text(
+                        "Factura Retornada al Flujo de Caja" if success else "Aviso de Restauración",
+                        size=16,
+                        weight=ft.FontWeight.BOLD,
+                    ),
+                ],
+            ),
+            content=ft.Text(msg, size=13, color=PastelTheme.TEXT_PRIMARY),
+            actions=[
+                *(
+                    [
+                        ft.OutlinedButton(
+                            "Ver Factura Restaurada",
+                            icon=ft.Icons.VISIBILITY_ROUNDED,
+                            on_click=lambda _, inv_id=restored_data["id"]: (
+                                self.page.pop_dialog(),
+                                self._show_invoice_detail_modal(inv_id),
+                            ),
+                        )
+                    ]
+                    if success and isinstance(restored_data, dict) and restored_data.get("id")
+                    else []
+                ),
+                ft.FilledButton(
+                    "Aceptar",
+                    bgcolor=PastelTheme.PRIMARY,
+                    color=PastelTheme.TEXT_ON_PRIMARY,
+                    on_click=lambda _: self.page.pop_dialog(),
+                ),
+            ],
+        )
+        self.page.show_dialog(result_dialog)
+
+    def _show_cancelled_invoice_detail_modal(self, audit_log_id: int) -> None:
+        """
+        Muestra el detalle completo de una factura anulada (productos que tenía cargados,
+        cantidades, precios, cliente y motivo de anulación) con opción directa de retornarla
+        al Flujo de Caja.
+        """
+        details = self.controller.get_audit_log_invoice_details(audit_log_id)
+        if not details:
+            return
+
+        self.page.pop_dialog()
+
+        is_restored = bool(details.get("restaurada", False))
+        has_snapshot = bool(details.get("has_snapshot", False))
+        pay_mode_label = "Crédito" if details.get("payment_type") == "CREDIT" else "Contado (Caja)"
+
+        status_badge = (
+            create_badge("RESTAURADA EN CAJA", PastelTheme.MINT_PASTEL, PastelTheme.ACCENT_MINT)
+            if is_restored
+            else create_badge("FACTURA ANULADA", PastelTheme.CORAL_PASTEL, PastelTheme.ACCENT_CORAL)
+        )
+        mode_badge = create_badge(
+            pay_mode_label,
+            PastelTheme.SKY_PASTEL,
+            PastelTheme.ACCENT_SKY,
+        )
+
+        header_section = ft.Container(
+            bgcolor=PastelTheme.CORAL_PASTEL if not is_restored else PastelTheme.MINT_PASTEL,
+            border_radius=12,
+            padding=16,
+            border=ft.Border.all(1, PastelTheme.BORDER_LIGHT),
+            content=ft.Row(
+                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                spacing=16,
+                controls=[
+                    ft.Column(
+                        spacing=6,
+                        expand=True,
+                        controls=[
+                            ft.Row(
+                                spacing=8,
+                                wrap=True,
+                                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                                controls=[
+                                    ft.Icon(ft.Icons.RECEIPT_LONG_ROUNDED, color=PastelTheme.PRIMARY, size=22),
+                                    ft.Text(
+                                        f"Factura #{details['invoice_number']}",
+                                        size=17,
+                                        weight=ft.FontWeight.BOLD,
+                                        color=PastelTheme.TEXT_PRIMARY,
+                                    ),
+                                    mode_badge,
+                                    status_badge,
+                                ],
+                            ),
+                            ft.Text(
+                                f"Fecha original: {details['created_at']}  |  Anulada: {details['fecha_anulacion']}",
+                                size=11,
+                                color=PastelTheme.TEXT_SECONDARY,
+                            ),
+                            ft.Text(
+                                f"Cliente: {details.get('customer_name') or 'Consumidor Final'}",
+                                size=12,
+                                weight=ft.FontWeight.W_600,
+                                color=PastelTheme.TEXT_PRIMARY,
+                            ),
+                        ],
+                    ),
+                    ft.Container(
+                        bgcolor=PastelTheme.SURFACE_WHITE,
+                        border_radius=10,
+                        padding=ft.Padding.symmetric(horizontal=16, vertical=10),
+                        border=ft.Border.all(1, PastelTheme.BORDER_LIGHT),
+                        content=ft.Column(
+                            spacing=3,
+                            horizontal_alignment=ft.CrossAxisAlignment.END,
+                            controls=[
+                                ft.Text(
+                                    "Total Factura",
+                                    size=11,
+                                    weight=ft.FontWeight.W_600,
+                                    color=PastelTheme.TEXT_SECONDARY,
+                                ),
+                                ft.Text(
+                                    f"${details['total']:,.2f}",
+                                    size=20,
+                                    weight=ft.FontWeight.BOLD,
+                                    color=PastelTheme.PRIMARY,
+                                ),
+                            ],
+                        ),
+                    ),
+                ],
+            ),
+        )
+
+        motivo_section = ft.Container(
+            bgcolor=PastelTheme.AMBER_PASTEL,
+            border_radius=12,
+            padding=12,
+            border=ft.Border.all(1, PastelTheme.BORDER_LIGHT),
+            content=ft.Column(
+                spacing=4,
+                horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
+                controls=[
+                    ft.Text(
+                        f"Motivo de Anulación: {details.get('motivo') or 'Sin motivo especificado'}",
+                        size=12,
+                        weight=ft.FontWeight.BOLD,
+                        color=PastelTheme.TEXT_PRIMARY,
+                    ),
+                    ft.Text(
+                        details.get("description_display", ""),
+                        size=12,
+                        color=PastelTheme.TEXT_SECONDARY,
+                    ),
+                    *(
+                        [
+                            ft.Text(
+                                "Nota: Esta factura fue eliminada antes de la actualización de respaldo detallado, pero puedes retornarla al Flujo de Caja con su valor total exacto.",
+                                size=11,
+                                italic=True,
+                                color=PastelTheme.ACCENT_AMBER,
+                            )
+                        ]
+                        if not has_snapshot
+                        else []
+                    ),
+                ],
+            ),
+        )
+
+        item_rows = []
+        for item in details.get("items", []):
+            item_rows.append(
+                ft.DataRow(
+                    cells=[
+                        ft.DataCell(
+                            ft.Text(
+                                item.get("display_name") or item.get("product_name", ""),
+                                size=12,
+                                weight=ft.FontWeight.W_600,
+                                color=PastelTheme.TEXT_PRIMARY,
+                            )
+                        ),
+                        ft.DataCell(
+                            ft.Text(
+                                str(item.get("quantity", 0)),
+                                size=12,
+                                weight=ft.FontWeight.BOLD,
+                                color=PastelTheme.PRIMARY,
+                            )
+                        ),
+                        ft.DataCell(
+                            ft.Text(
+                                f"${item.get('unit_price', 0.0):,.2f}",
+                                size=12,
+                                color=PastelTheme.TEXT_SECONDARY,
+                            )
+                        ),
+                        ft.DataCell(
+                            ft.Text(
+                                f"${item.get('subtotal', 0.0):,.2f}",
+                                size=12,
+                                weight=ft.FontWeight.BOLD,
+                                color=PastelTheme.TEXT_PRIMARY,
+                            )
+                        ),
+                    ]
+                )
+            )
+
+        products_data_table = ft.DataTable(
+            width=670,
+            heading_row_color=PastelTheme.SURFACE_VARIANT,
+            heading_row_height=40,
+            data_row_min_height=42,
+            data_row_max_height=54,
+            column_spacing=24,
+            horizontal_lines=ft.BorderSide(1, PastelTheme.BORDER_LIGHT),
+            columns=[
+                ft.DataColumn(ft.Text("Producto", weight=ft.FontWeight.BOLD, size=12, color=PastelTheme.TEXT_SECONDARY)),
+                ft.DataColumn(
+                    ft.Text("Cantidad", weight=ft.FontWeight.BOLD, size=12, color=PastelTheme.TEXT_SECONDARY),
+                    numeric=True,
+                ),
+                ft.DataColumn(
+                    ft.Text("Precio Unitario", weight=ft.FontWeight.BOLD, size=12, color=PastelTheme.TEXT_SECONDARY),
+                    numeric=True,
+                ),
+                ft.DataColumn(
+                    ft.Text("Subtotal", weight=ft.FontWeight.BOLD, size=12, color=PastelTheme.TEXT_SECONDARY),
+                    numeric=True,
+                ),
+            ],
+            rows=item_rows,
+        )
+
+        table_section = ft.Container(
+            bgcolor=PastelTheme.SURFACE_WHITE,
+            border_radius=12,
+            padding=14,
+            border=ft.Border.all(1, PastelTheme.BORDER_LIGHT),
+            content=ft.Column(
+                spacing=8,
+                horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
+                controls=[
+                    ft.Row(
+                        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                        controls=[
+                            ft.Row(
+                                spacing=6,
+                                controls=[
+                                    ft.Icon(ft.Icons.SHOPPING_BAG_OUTLINED, size=17, color=PastelTheme.PRIMARY),
+                                    ft.Text(
+                                        "Productos que tenía cargados esta Factura",
+                                        size=13,
+                                        weight=ft.FontWeight.BOLD,
+                                        color=PastelTheme.TEXT_PRIMARY,
+                                    ),
+                                ],
+                            ),
+                            create_badge(
+                                f"{details.get('items_count', 0)} unidades",
+                                PastelTheme.MINT_PASTEL,
+                                PastelTheme.ACCENT_MINT,
+                            ),
+                        ],
+                    ),
+                    ft.Container(
+                        content=ft.Column(
+                            scroll=ft.ScrollMode.AUTO,
+                            controls=[products_data_table],
+                        ),
+                        height=210,
+                    ),
+                ],
+            ),
+        )
+
+        detail_dialog = ft.AlertDialog(
+            modal=False,
+            title=ft.Row(
+                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                controls=[
+                    ft.Row(
+                        spacing=8,
+                        controls=[
+                            ft.Icon(ft.Icons.HISTORY_ROUNDED, color=PastelTheme.ACCENT_AMBER, size=22),
+                            ft.Text(
+                                "Detalle de Factura Anulada (Auditoría)",
+                                size=17,
+                                weight=ft.FontWeight.BOLD,
+                                color=PastelTheme.TEXT_PRIMARY,
+                            ),
+                        ],
+                    ),
+                    ft.IconButton(
+                        icon=ft.Icons.CLOSE_ROUNDED,
+                        icon_color=PastelTheme.TEXT_SECONDARY,
+                        tooltip="Cerrar ventana",
+                        on_click=lambda _: self.page.pop_dialog(),
+                    ),
+                ],
+            ),
+            content=ft.Container(
+                width=720,
+                content=ft.Column(
+                    tight=True,
+                    spacing=12,
+                    controls=[
+                        header_section,
+                        motivo_section,
+                        table_section,
+                    ],
+                ),
+            ),
+            actions=[
+                ft.TextButton(
+                    "Volver a Auditoría",
+                    icon=ft.Icons.ARROW_BACK_ROUNDED,
+                    on_click=lambda _: (
+                        self.page.pop_dialog(),
+                        self.show_audit_logs_modal(),
+                    ),
+                ),
+                ft.FilledButton(
+                    "Ya Restaurada en Caja" if is_restored else "Retornar Factura a Flujo de Caja",
+                    icon=ft.Icons.CHECK_CIRCLE_OUTLINE_ROUNDED if is_restored else ft.Icons.RESTORE_ROUNDED,
+                    disabled=is_restored,
+                    bgcolor=PastelTheme.ACCENT_MINT if not is_restored else PastelTheme.SURFACE_VARIANT,
+                    color=PastelTheme.TEXT_ON_PRIMARY if not is_restored else PastelTheme.TEXT_MUTED,
+                    on_click=lambda _, aid=audit_log_id: self._handle_restore_cancelled_invoice(aid),
+                ),
+            ],
+        )
+        self.page.show_dialog(detail_dialog)
 
     # ================= MODAL "DETALLE DE FACTURA" EN FLUJO DE CAJA =================
 

@@ -200,6 +200,19 @@ def _migrate_database_schema(target_engine: Optional[Engine] = None) -> None:
                 conn.execute(text("ALTER TABLE invoices ADD COLUMN amount_paid FLOAT DEFAULT 0.0"))
                 conn.commit()
 
+            # 2.2 registro_anulaciones.snapshot_json y registro_anulaciones.restaurada
+            res_audit = conn.execute(text("PRAGMA table_info(registro_anulaciones)"))
+            audit_cols = [row[1] for row in res_audit.fetchall()]
+            if audit_cols:
+                if "snapshot_json" not in audit_cols:
+                    conn.execute(text("ALTER TABLE registro_anulaciones ADD COLUMN snapshot_json TEXT DEFAULT NULL"))
+                    conn.commit()
+                if "restaurada" not in audit_cols:
+                    conn.execute(text("ALTER TABLE registro_anulaciones ADD COLUMN restaurada BOOLEAN NOT NULL DEFAULT 0"))
+                    conn.commit()
+                conn.execute(text("UPDATE registro_anulaciones SET restaurada = 0 WHERE restaurada IS NULL"))
+                conn.commit()
+
             # 3. Asegurar formato DateTime completo (con hora exacta) en invoices y suppliers
             conn.execute(text(
                 "UPDATE invoices SET created_at = created_at || ' 00:00:00' "
@@ -223,15 +236,15 @@ def _migrate_database_schema(target_engine: Optional[Engine] = None) -> None:
             print(f"[Database Migration Warning]: {e}")
 
 
-def ensure_wildcard_product() -> Product:
+def ensure_wildcard_product(active_session: Optional[Session] = None) -> Product:
     """
     Garantiza que exista un único Producto de sistema llamado 'Comodín / Venta Libre'
     con stock_infinito=True en la base de datos activa para soportar Ventas Libres
     sin romper las llaves foráneas (Foreign Keys) ni ensuciar el catálogo de inventario.
     """
-    with get_db_session() as session:
+    def _ensure_in_session(sess: Session, should_commit: bool) -> Product:
         wildcard = (
-            session.query(Product)
+            sess.query(Product)
             .filter(Product.barcode == WILDCARD_PRODUCT_BARCODE)
             .first()
         )
@@ -250,9 +263,12 @@ def ensure_wildcard_product() -> Product:
                 category="Venta Libre",
                 is_active=True,
             )
-            session.add(wildcard)
-            session.commit()
-            session.refresh(wildcard)
+            sess.add(wildcard)
+            if should_commit:
+                sess.commit()
+                sess.refresh(wildcard)
+            else:
+                sess.flush()
         else:
             changed = False
             if not bool(wildcard.stock_infinito):
@@ -262,9 +278,18 @@ def ensure_wildcard_product() -> Product:
                 wildcard.is_active = True
                 changed = True
             if changed:
-                session.commit()
-                session.refresh(wildcard)
+                if should_commit:
+                    sess.commit()
+                    sess.refresh(wildcard)
+                else:
+                    sess.flush()
         return wildcard
+
+    if active_session is not None:
+        return _ensure_in_session(active_session, should_commit=False)
+
+    with get_db_session() as session:
+        return _ensure_in_session(session, should_commit=True)
 
 
 def init_db(seed_sample_data: bool = True) -> None:

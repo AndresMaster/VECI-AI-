@@ -1,16 +1,19 @@
 import calendar
+import json
 import math
 from datetime import datetime, date, time, timedelta
 from typing import Dict, Any, List, Optional, Tuple, Callable
 from sqlalchemy import func, case, literal, union_all
 from sqlalchemy.orm import joinedload
 
-from database import get_db_session
+from database import get_db_session, ensure_wildcard_product
 from models import (
     Product,
     WILDCARD_PRODUCT_BARCODE,
+    Customer,
     Invoice,
     InvoiceItem,
+    InvoicePayment,
     Supplier,
     SupplierPurchase,
     GastosGenerales,
@@ -757,11 +760,11 @@ class DashboardController:
 
     def reverse_sale_invoice(self, invoice_id: int, motivo: str) -> Tuple[bool, str]:
         """
-        Reversa una venta, registra la auditoría inmutable (Loss Prevention) y restaura el stock
-        en una única transacción atómica segura de base de datos:
+        Reversa una venta, registra la auditoría inmutable (Loss Prevention) con snapshot completo
+        y restaura el stock en una única transacción atómica segura de base de datos:
         1. Valida que el motivo de anulación tenga al menos 5 caracteres.
-        2. Lee los datos de la factura original ANTES de ejecutar el delete().
-        3. Crea el registro en `RegistroAnulaciones` con fecha_anulacion, factura_id_original, monto_total y motivo.
+        2. Lee los datos completos de la factura original (cabecera, cliente, items y abonos) ANTES de ejecutar el delete().
+        3. Crea el registro en `RegistroAnulaciones` con fecha_anulacion, factura_id_original, monto_total, motivo y snapshot_json.
         4. Itera sobre los InvoiceItems, suma de vuelta la cantidad al Producto en inventario (product.stock += item.quantity).
         5. Elimina los items y la factura original y ejecuta un único session.commit().
         """
@@ -775,24 +778,37 @@ class DashboardController:
         with get_db_session() as session:
             invoice = (
                 session.query(Invoice)
-                .options(joinedload(Invoice.items))
+                .options(
+                    joinedload(Invoice.customer),
+                    joinedload(Invoice.items).joinedload(InvoiceItem.product),
+                    joinedload(Invoice.payments),
+                )
                 .filter(Invoice.id == invoice_id)
                 .first()
             )
             if not invoice:
                 return False, "La factura de venta seleccionada no fue encontrada."
 
-            # 1. Leer los datos de la factura que se va a anular ANTES de eliminarla
+            # 1. Leer los datos completos de la factura que se va a anular ANTES de eliminarla
             invoice_num = str(invoice.invoice_number or invoice.id)
             original_id_str = f"{invoice_num} (ID: {invoice.id})"
             original_total = round(float(invoice.total or 0.0), 2)
 
-            # 2. Crear registro inmutable de auditoría en RegistroAnulaciones
+            snapshot_payload = invoice.to_dict()
+            raw_desc = (invoice.credit_notes or "").strip()
+            snapshot_payload["description_display"] = (
+                raw_desc if raw_desc else "Venta registrada en Punto de Venta (POS)"
+            )
+            snapshot_str = json.dumps(snapshot_payload, ensure_ascii=False, default=str)
+
+            # 2. Crear registro inmutable de auditoría en RegistroAnulaciones con snapshot_json
             audit_entry = RegistroAnulaciones(
                 factura_id_original=original_id_str,
                 monto_total=original_total,
                 fecha_anulacion=datetime.now(),
                 motivo=clean_motivo,
+                snapshot_json=snapshot_str,
+                restaurada=False,
             )
             session.add(audit_entry)
 
@@ -811,6 +827,9 @@ class DashboardController:
                     restored_units += qty
 
                 session.delete(item)
+
+            for payment in list(invoice.payments):
+                session.delete(payment)
 
             # 4. Eliminar la factura original y confirmar toda la transacción en bloque
             session.delete(invoice)
@@ -831,6 +850,323 @@ class DashboardController:
                 .all()
             )
             return [log.to_dict() for log in logs]
+
+    def get_audit_log_invoice_details(self, audit_log_id: int) -> Optional[Dict[str, Any]]:
+        """
+        Retorna el detalle completo de una factura anulada desde el Registro de Auditoría
+        para poder visualizar exactamente qué productos, precios y cliente tenía cargados.
+        Incluye soporte retrocompatible para anulaciones previas que no tenían snapshot_json.
+        """
+        with get_db_session() as session:
+            log = (
+                session.query(RegistroAnulaciones)
+                .filter(RegistroAnulaciones.id == audit_log_id)
+                .first()
+            )
+            if not log:
+                return None
+
+            log_dict = log.to_dict()
+            raw_ref = str(log.factura_id_original or f"AUDIT-{log.id}").strip()
+            orig_invoice_num = raw_ref.split(" (ID:")[0].strip() if " (ID:" in raw_ref else raw_ref
+            dt_cancel = log.fecha_anulacion or datetime.now()
+            total_val = round(float(log.monto_total or 0.0), 2)
+
+            snapshot = log_dict.get("snapshot")
+            if isinstance(snapshot, dict) and snapshot:
+                items_list = snapshot.get("items", []) or []
+                total_cost = round(
+                    sum(float(i.get("unit_cost", 0.0)) * int(i.get("quantity", 1)) for i in items_list),
+                    2,
+                )
+                total_profit = round(float(snapshot.get("total", total_val)) - total_cost, 2)
+                raw_desc = (snapshot.get("credit_notes") or "").strip()
+                return {
+                    "audit_log_id": log.id,
+                    "has_snapshot": True,
+                    "restaurada": bool(log.restaurada),
+                    "motivo": log.motivo or "",
+                    "fecha_anulacion": dt_cancel.strftime("%Y-%m-%d %H:%M:%S"),
+                    "factura_id_original": raw_ref,
+                    "invoice_number": snapshot.get("invoice_number") or orig_invoice_num,
+                    "created_at": snapshot.get("created_at") or dt_cancel.strftime("%Y-%m-%d %H:%M:%S"),
+                    "date": snapshot.get("date") or dt_cancel.strftime("%Y-%m-%d"),
+                    "time": snapshot.get("time") or dt_cancel.strftime("%H:%M:%S"),
+                    "customer_id": snapshot.get("customer_id"),
+                    "customer_name": snapshot.get("customer_name") or "Consumidor Final",
+                    "payment_type": snapshot.get("payment_type") or "CASH",
+                    "payment_status": snapshot.get("payment_status") or "PAID",
+                    "subtotal": round(float(snapshot.get("subtotal", total_val)), 2),
+                    "discount": round(float(snapshot.get("discount", 0.0)), 2),
+                    "tax": round(float(snapshot.get("tax", 0.0)), 2),
+                    "total": round(float(snapshot.get("total", total_val)), 2),
+                    "amount_paid": round(float(snapshot.get("amount_paid", total_val)), 2),
+                    "balance_due": round(float(snapshot.get("balance_due", 0.0)), 2),
+                    "total_cost": round(float(snapshot.get("total_cost", total_cost)), 2),
+                    "total_profit": round(float(snapshot.get("total_profit", total_profit)), 2),
+                    "credit_notes": raw_desc,
+                    "description_display": (
+                        snapshot.get("description_display")
+                        or (raw_desc if raw_desc else "Venta registrada en Punto de Venta (POS)")
+                    ),
+                    "items_count": int(snapshot.get("items_count") or sum(int(i.get("quantity", 1)) for i in items_list)),
+                    "items": items_list,
+                    "payments": snapshot.get("payments", []) or [],
+                }
+
+            # Fallback retrocompatible para facturas anuladas antes de implementar snapshot_json
+            est_cost = round(total_val / 1.2, 2) if total_val > 0 else 0.0
+            est_profit = round(total_val - est_cost, 2)
+            fallback_item = {
+                "product_id": None,
+                "barcode": WILDCARD_PRODUCT_BARCODE,
+                "product_name": f"Venta Histórica Recuperada ({orig_invoice_num})",
+                "display_name": f"Venta Histórica Recuperada ({orig_invoice_num}) [Sin desglose previo]",
+                "presentacion": "Registro Histórico",
+                "category": "Venta Libre / Comodín",
+                "unit_cost": est_cost,
+                "unit_price": total_val,
+                "quantity": 1,
+                "subtotal": total_val,
+                "total_profit": est_profit,
+            }
+            return {
+                "audit_log_id": log.id,
+                "has_snapshot": False,
+                "restaurada": bool(log.restaurada),
+                "motivo": log.motivo or "",
+                "fecha_anulacion": dt_cancel.strftime("%Y-%m-%d %H:%M:%S"),
+                "factura_id_original": raw_ref,
+                "invoice_number": orig_invoice_num,
+                "created_at": dt_cancel.strftime("%Y-%m-%d %H:%M:%S"),
+                "date": dt_cancel.strftime("%Y-%m-%d"),
+                "time": dt_cancel.strftime("%H:%M:%S"),
+                "customer_id": None,
+                "customer_name": "Consumidor Final",
+                "payment_type": "CASH",
+                "payment_status": "PAID",
+                "subtotal": total_val,
+                "discount": 0.0,
+                "tax": 0.0,
+                "total": total_val,
+                "amount_paid": total_val,
+                "balance_due": 0.0,
+                "total_cost": est_cost,
+                "total_profit": est_profit,
+                "credit_notes": f"Factura histórica anulada por: {log.motivo or 'Sin motivo'}",
+                "description_display": (
+                    f"Factura anulada antes del desglose automático (Motivo original: {log.motivo or 'N/A'})"
+                ),
+                "items_count": 1,
+                "items": [fallback_item],
+                "payments": [],
+            }
+
+    def restore_cancelled_invoice(self, audit_log_id: int) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
+        """
+        Restaura una factura previamente anulada desde `RegistroAnulaciones` de vuelta a la tabla
+        `invoices` (Flujo de Caja / Cartera), reconstruyendo sus ítems, abonos y descontando
+        nuevamente el stock físico de los productos correspondientes.
+        Soporta tanto facturas con `snapshot_json` completo como anulaciones históricas previas.
+        """
+        with get_db_session() as session:
+            log = (
+                session.query(RegistroAnulaciones)
+                .filter(RegistroAnulaciones.id == audit_log_id)
+                .first()
+            )
+            if not log:
+                return False, "El registro de anulación seleccionado no existe.", None
+
+            raw_ref = str(log.factura_id_original or f"INV-REST-{log.id}").strip()
+            orig_invoice_num = raw_ref.split(" (ID:")[0].strip() if " (ID:" in raw_ref else raw_ref
+
+            if bool(log.restaurada):
+                existing = (
+                    session.query(Invoice)
+                    .filter(Invoice.invoice_number == orig_invoice_num)
+                    .first()
+                )
+                if existing:
+                    return (
+                        False,
+                        f"La factura {orig_invoice_num} ya fue restaurada anteriormente y se encuentra activa en el Flujo de Caja.",
+                        existing.to_dict(),
+                    )
+
+            log_dict = log.to_dict()
+            snapshot = log_dict.get("snapshot")
+
+            # Determinar número de factura único (reutilizando el original si está libre)
+            target_invoice_num = (
+                (snapshot.get("invoice_number") if isinstance(snapshot, dict) else None)
+                or orig_invoice_num
+            )
+            collision = (
+                session.query(Invoice.id)
+                .filter(Invoice.invoice_number == target_invoice_num)
+                .first()
+            )
+            if collision is not None:
+                suffix = 1
+                while True:
+                    candidate = f"{target_invoice_num}-R{suffix}"
+                    exists = (
+                        session.query(Invoice.id)
+                        .filter(Invoice.invoice_number == candidate)
+                        .first()
+                    )
+                    if exists is None:
+                        target_invoice_num = candidate
+                        break
+                    suffix += 1
+
+            discounted_units = 0
+
+            if isinstance(snapshot, dict) and snapshot:
+                # Parsear fecha original de creación
+                created_at_dt = log.fecha_anulacion or datetime.now()
+                raw_created = snapshot.get("created_at") or snapshot.get("fecha_hora")
+                if raw_created:
+                    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+                        try:
+                            created_at_dt = datetime.strptime(str(raw_created)[:19], fmt)
+                            break
+                        except ValueError:
+                            continue
+
+                # Verificar si el cliente original aún existe
+                cust_id = snapshot.get("customer_id")
+                if cust_id is not None:
+                    cust_exists = session.query(Customer.id).filter(Customer.id == cust_id).first()
+                    if not cust_exists:
+                        cust_id = None
+
+                restored_invoice = Invoice(
+                    invoice_number=target_invoice_num,
+                    created_at=created_at_dt,
+                    customer_id=cust_id,
+                    payment_type=snapshot.get("payment_type") or "CASH",
+                    payment_status=snapshot.get("payment_status") or "PAID",
+                    subtotal=round(float(snapshot.get("subtotal", log.monto_total or 0.0)), 2),
+                    discount=round(float(snapshot.get("discount", 0.0)), 2),
+                    tax=round(float(snapshot.get("tax", 0.0)), 2),
+                    total=round(float(snapshot.get("total", log.monto_total or 0.0)), 2),
+                    amount_paid=round(float(snapshot.get("amount_paid", log.monto_total or 0.0)), 2),
+                    credit_notes=snapshot.get("credit_notes") or "",
+                    created_via=snapshot.get("created_via") or "POS_DESKTOP",
+                )
+                session.add(restored_invoice)
+                session.flush()
+
+                items_data = snapshot.get("items", []) or []
+                wildcard_prod = None
+
+                for item_dict in items_data:
+                    qty = max(1, int(item_dict.get("quantity", 1)))
+                    prod_id = item_dict.get("product_id")
+                    barcode_str = str(item_dict.get("barcode") or WILDCARD_PRODUCT_BARCODE).strip()
+
+                    product = None
+                    if prod_id:
+                        product = session.query(Product).filter(Product.id == prod_id).first()
+                    if product is None and barcode_str:
+                        product = session.query(Product).filter(Product.barcode == barcode_str).first()
+                    if product is None:
+                        if wildcard_prod is None:
+                            wildcard_prod = ensure_wildcard_product(session)
+                        product = wildcard_prod
+
+                    if product is not None and not bool(product.stock_infinito):
+                        product.stock = max(0, int(product.stock or 0) - qty)
+                        discounted_units += qty
+
+                    unit_price = round(float(item_dict.get("unit_price", 0.0)), 2)
+                    unit_cost = round(float(item_dict.get("unit_cost", 0.0)), 2)
+                    subtotal_val = round(float(item_dict.get("subtotal", unit_price * qty)), 2)
+
+                    restored_item = InvoiceItem(
+                        invoice_id=restored_invoice.id,
+                        product_id=product.id if product else None,
+                        barcode=barcode_str,
+                        product_name=str(item_dict.get("product_name") or (product.name if product else "Producto")),
+                        presentacion=str(item_dict.get("presentacion") or ""),
+                        unit_cost=unit_cost,
+                        unit_price=unit_price,
+                        quantity=qty,
+                        subtotal=subtotal_val,
+                    )
+                    session.add(restored_item)
+
+                payments_data = snapshot.get("payments", []) or []
+                for pay_dict in payments_data:
+                    pay_dt = created_at_dt
+                    raw_pay_dt = pay_dict.get("fecha_hora")
+                    if raw_pay_dt:
+                        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+                            try:
+                                pay_dt = datetime.strptime(str(raw_pay_dt)[:19], fmt)
+                                break
+                            except ValueError:
+                                continue
+                    restored_pay = InvoicePayment(
+                        invoice_id=restored_invoice.id,
+                        fecha_hora=pay_dt,
+                        amount=round(float(pay_dict.get("amount", 0.0)), 2),
+                        balance_after=round(float(pay_dict.get("balance_after", 0.0)), 2),
+                        payment_kind=str(pay_dict.get("payment_kind") or "ABONO"),
+                        notes=pay_dict.get("notes") or "",
+                    )
+                    session.add(restored_pay)
+
+            else:
+                # Restauración retrocompatible para facturas anuladas antes de implementar snapshot_json
+                total_val = round(float(log.monto_total or 0.0), 2)
+                est_cost = round(total_val / 1.2, 2) if total_val > 0 else 0.0
+                wildcard_prod = ensure_wildcard_product(session)
+
+                restored_invoice = Invoice(
+                    invoice_number=target_invoice_num,
+                    created_at=log.fecha_anulacion or datetime.now(),
+                    customer_id=None,
+                    payment_type="CASH",
+                    payment_status="PAID",
+                    subtotal=total_val,
+                    discount=0.0,
+                    tax=0.0,
+                    total=total_val,
+                    amount_paid=total_val,
+                    credit_notes=f"Factura restaurada desde Auditoría ({log.motivo or 'Recuperación'})",
+                    created_via="POS_DESKTOP",
+                )
+                session.add(restored_invoice)
+                session.flush()
+
+                restored_item = InvoiceItem(
+                    invoice_id=restored_invoice.id,
+                    product_id=wildcard_prod.id,
+                    barcode=WILDCARD_PRODUCT_BARCODE,
+                    product_name=f"Venta Histórica Recuperada ({target_invoice_num})",
+                    presentacion="Restaurada",
+                    unit_cost=est_cost,
+                    unit_price=total_val,
+                    quantity=1,
+                    subtotal=total_val,
+                )
+                session.add(restored_item)
+
+            log.restaurada = True
+            session.commit()
+            session.refresh(restored_invoice)
+            restored_dict = restored_invoice.to_dict()
+
+        self.notify_filter_change()
+        return (
+            True,
+            f"Factura #{target_invoice_num} restaurada exitosamente al Flujo de Caja"
+            + (f" ({discounted_units} uds descontadas de inventario)." if discounted_units > 0 else "."),
+            restored_dict,
+        )
 
     # ================= REGISTRO DE GASTOS GENERALES Y PAGOS A PROVEEDORES =================
 

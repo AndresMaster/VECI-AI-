@@ -1,5 +1,7 @@
+import json
 from datetime import datetime
-from sqlalchemy import String, Integer, Float, Text, DateTime
+from typing import Optional
+from sqlalchemy import String, Integer, Float, Text, DateTime, Boolean
 from sqlalchemy.orm import Mapped, mapped_column
 from models.base import Base
 
@@ -8,8 +10,9 @@ class RegistroAnulaciones(Base):
     """
     Modelo inmutable de Auditoría de Anulaciones / Reversiones de Ventas (Loss Prevention).
     Almacena en la base de datos de cada inquilino (tenant_{username}.db) qué factura fue
-    reversada/eliminada, su monto total, la fecha y hora exacta de la anulación y el motivo
-    obligatorio registrado por el cajero.
+    reversada/eliminada, su monto total, la fecha y hora exacta de la anulación, el motivo
+    obligatorio registrado por el cajero, y el snapshot completo (JSON) de la factura y sus
+    productos para poder visualizar su detalle o retornarla a Flujo de Caja.
     """
     __tablename__ = "registro_anulaciones"
 
@@ -18,6 +21,8 @@ class RegistroAnulaciones(Base):
     monto_total: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     fecha_anulacion: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, index=True, nullable=False)
     motivo: Mapped[str] = mapped_column(Text, nullable=False)
+    snapshot_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True, default=None)
+    restaurada: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     @property
     def fecha_hora(self) -> datetime:
@@ -30,6 +35,13 @@ class RegistroAnulaciones(Base):
 
     def to_dict(self) -> dict:
         dt = self.fecha_anulacion or datetime.now()
+        snapshot_data = None
+        if self.snapshot_json:
+            try:
+                snapshot_data = json.loads(self.snapshot_json)
+            except Exception:
+                snapshot_data = None
+        items_list = snapshot_data.get("items", []) if isinstance(snapshot_data, dict) else []
         return {
             "id": self.id,
             "factura_id_original": self.factura_id_original,
@@ -39,6 +51,10 @@ class RegistroAnulaciones(Base):
             "hora": dt.strftime("%H:%M:%S"),
             "timestamp": dt,
             "motivo": self.motivo,
+            "restaurada": bool(self.restaurada),
+            "snapshot": snapshot_data,
+            "items": items_list,
+            "has_snapshot": bool(snapshot_data),
         }
 
     def __repr__(self) -> str:

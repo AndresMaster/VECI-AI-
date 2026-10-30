@@ -4,7 +4,7 @@
 ; =============================================================================
 
 #define MyAppName "VECI AI"
-#define MyAppVersion "1.0.4"
+#define MyAppVersion "1.0.5"
 #define MyAppPublisher "VECI AI Technologies"
 #define MyAppURL "https://github.com/veciai"
 #define MyAppExeName "VECI_AI.exe"
